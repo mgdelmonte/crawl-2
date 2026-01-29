@@ -45,6 +45,7 @@ game_state::game_state()
       marked_as_won(false), arena_suspended(false),
       generating_level(false), dump_maps(false), test(false), script(false),
       build_db(false), use_des_cache(true), tests_selected(),
+      test_run_turns(false), test_exit_loop(false), test_turns_remaining(0),
 #ifdef DGAMELAUNCH
       throttle(true),
       bypassed_startup_menu(true),

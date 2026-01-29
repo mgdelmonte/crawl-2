@@ -124,8 +124,9 @@ static COLOURS FG_COL = LIGHTGREY;
 /** @brief The current background @em colour. */
 static COLOURS BG_COL = BLACK;
 
-void enter_headless_mode() { }
-bool in_headless_mode() { return false; }
+static bool _headless_mode = false;
+void enter_headless_mode() { _headless_mode = true; }
+bool in_headless_mode() { return _headless_mode; }
 
 static void _update_dirty_area(short x, short y)
 {
@@ -359,6 +360,15 @@ static void w32_term_resizer()
 
 void console_startup()
 {
+    // In headless mode, set default screen size but skip console initialization
+    if (_headless_mode)
+    {
+        screensize.X = 80;
+        screensize.Y = 25;
+        screen = new CHAR_INFO[screensize.X * screensize.Y];
+        return;
+    }
+
     inbuf = GetStdHandle(STD_INPUT_HANDLE);
     old_outbuf = GetStdHandle(STD_OUTPUT_HANDLE);
 

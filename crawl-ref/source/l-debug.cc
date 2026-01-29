@@ -32,6 +32,9 @@
 #include "view.h"
 #include "wiz-dgn.h"
 
+// From main.cc - runs game turns for test scripts
+extern void run_turns_for_test(int n);
+
 // WARNING: This is a very low-level call.
 //
 // Usage: goto_place("placename", <bind_entrance>)
@@ -472,6 +475,34 @@ LUAFN(debug_check_moncasts)
     return 1;
 }
 
+/*** Run game turns for testing.
+ * Executes n game turns with auto-wait, allowing ready() and other
+ * per-turn hooks to run. Maximum 1000 turns per call.
+ * @tparam int n number of turns to run (default 1)
+ * @function run_turns
+ */
+LUAFN(debug_run_turns)
+{
+    int n = lua_isnumber(ls, 1) ? luaL_safe_checkint(ls, 1) : 1;
+    if (n < 1)
+        n = 1;
+    if (n > 1000)
+        n = 1000;
+    run_turns_for_test(n);
+    return 0;
+}
+
+/*** Request early exit from test turn loop.
+ * Call this from ready() or other hooks to stop the turn loop early.
+ * @function exit_turn_loop
+ */
+LUAFN(debug_exit_turn_loop)
+{
+    UNUSED(ls);
+    crawl_state.test_exit_loop = true;
+    return 0;
+}
+
 const struct luaL_Reg debug_dlib[] =
 {
 { "goto_place", debug_goto_place },
@@ -504,5 +535,7 @@ const struct luaL_Reg debug_dlib[] =
 { "reset_rng", debug_reset_rng },
 { "get_rng_state", debug_get_rng_state },
 { "check_moncasts", debug_check_moncasts },
+{ "run_turns", debug_run_turns },
+{ "exit_turn_loop", debug_exit_turn_loop },
 { nullptr, nullptr }
 };

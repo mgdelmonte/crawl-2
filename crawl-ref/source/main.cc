@@ -1260,7 +1260,12 @@ static void _input()
 #ifdef USE_TILE_LOCAL
         cursor_control con(false);
 #endif
-        const command_type cmd = you.turn_is_over ? CMD_NO_CMD : _get_next_cmd();
+        // In test turn mode, auto-wait instead of getting player input
+        command_type cmd;
+        if (crawl_state.test_run_turns)
+            cmd = you.turn_is_over ? CMD_NO_CMD : CMD_WAIT;
+        else
+            cmd = you.turn_is_over ? CMD_NO_CMD : _get_next_cmd();
 
         if (crawl_state.seen_hups)
             save_game(true, "Game saved, see you later!");
@@ -1327,6 +1332,10 @@ static void _input()
         handle_channelled_spell();
 
         world_reacts();
+
+        // Track turns for test mode
+        if (crawl_state.test_run_turns && crawl_state.test_turns_remaining > 0)
+            crawl_state.test_turns_remaining--;
     }
     else
     {
@@ -1342,6 +1351,34 @@ static void _input()
     _update_replay_state();
 
     crawl_state.clear_god_acting();
+}
+
+// Run game turns for test scripts. Executes n turns with auto-wait,
+// allowing ready() and other per-turn hooks to run.
+void run_turns_for_test(int n)
+{
+    if (n <= 0 || n > 1000)
+        n = 1;  // Sanity check
+
+    // Ensure player has HP (tests may not initialize this)
+    if (you.hp <= 0 || you.hp_max <= 0)
+    {
+        you.hp_max = 100;
+        you.hp = 100;
+    }
+
+    crawl_state.test_run_turns = true;
+    crawl_state.test_exit_loop = false;
+    crawl_state.test_turns_remaining = n;
+
+    while (crawl_state.test_turns_remaining > 0 && !crawl_state.test_exit_loop)
+    {
+        _input();
+    }
+
+    crawl_state.test_run_turns = false;
+    crawl_state.test_exit_loop = false;
+    crawl_state.test_turns_remaining = 0;
 }
 
 static bool _can_take_stairs(dungeon_feature_type ftype, bool down,

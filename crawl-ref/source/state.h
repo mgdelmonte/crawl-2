@@ -91,6 +91,11 @@ struct game_state
     vector<string> tests_selected; // Tests to be run.
     vector<string> script_args;    // Arguments to scripts.
 
+    // For debug.run_turns() - running game loop from tests
+    bool test_run_turns;        // Currently running turns from a test
+    bool test_exit_loop;        // Test requested early exit from turn loop
+    int  test_turns_remaining;  // Turns left to run (0 = done)
+
     bool throttle;
 
     bool bypassed_startup_menu;

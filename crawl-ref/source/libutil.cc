@@ -378,6 +378,8 @@ coord_def cgetpos(GotoRegion region)
 
 bool valid_cursor_pos(int x, int y, GotoRegion region)
 {
+    if (in_headless_mode())
+        return true;
     const coord_def sz = cgetsize(region);
     return x >= 1 && y >= 1 && x <= sz.x && y <= sz.y;
 }
