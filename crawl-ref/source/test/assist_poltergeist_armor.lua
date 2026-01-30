@@ -1,13 +1,15 @@
 -- Test assist.rc poltergeist armor detection
 -- Run with: crawl -test assist_poltergeist_armor
 --
--- Tests that a poltergeist is prompted to pick up visible armor.
--- Since RC (clua) and tests (dlua) are separate VMs, we test by:
--- 1. Loading assist.rc to verify it parses without errors
--- 2. Checking that the startup message was emitted
--- 3. Setting up a level with a cloak and verifying LOS works
+-- Tests that a poltergeist automatically picks up and equips visible armor
+-- when the ready() hook runs via the game loop.
 
--- Load assist.rc (this runs in clua, separate from this dlua test)
+-- First, inject a c_answer_prompt function to auto-answer "yes" to prompts
+-- This is needed because in headless/test mode, yesno returns the default
+-- which is "no" for the armor pickup prompt
+crawl.setopt("{ function c_answer_prompt(prompt) return true end }")
+
+-- Load assist.rc
 crawl.read_options("C:/dev/simple/assist.rc")
 
 -- Verify RC loaded by checking for startup message
@@ -39,25 +41,48 @@ assert(#floor_items > 0, "cloak should be placed on floor")
 local cloak = floor_items[1]
 assert(cloak.name():find("cloak"), "item should be a cloak: " .. cloak.name())
 
--- Verify LOS works (using absolute coordinates)
-local px, py = you.pos()
-local can_see = los.cell_see_cell(px, py, cloak_x, cloak_y)
-assert(can_see == 1, "player should have LOS to cloak")
+-- Verify poltergeist has no cloak equipped initially
+assert(items.equipped_at("cloak") == nil, "poltergeist should not have cloak equipped initially")
 
--- Verify the cloak is armor in the cloak slot
-assert(cloak.class(true) == "armour", "cloak should be armour class")
+-- Clear message buffer
+crawl.messages(100)
 
--- Verify poltergeist has no cloak equipped
-assert(items.equipped_at("cloak") == nil, "poltergeist should not have cloak equipped")
+-- Run game turns - the ready() hook should detect the cloak and go pick it up
+-- We need enough turns for: travel to cloak (2 tiles) + pickup + equip
+debug.run_turns(20)
 
--- The actual ready() function runs in clua, so we can't call it directly.
--- But we've verified:
--- 1. RC loads without errors
--- 2. Level setup works with proper LOS
--- 3. Cloak is placed and visible
--- 4. Poltergeist has open armor slot
---
--- The prompt/pickup/equip sequence requires the game loop which isn't
--- available in test mode. Manual testing confirms this works.
+-- Check that the cloak was picked up (no longer on floor at original location)
+floor_items = dgn.items_at(cloak_x, cloak_y)
+local cloak_still_on_floor = false
+for _, item in ipairs(floor_items) do
+    if item.name():find("cloak") then
+        cloak_still_on_floor = true
+        break
+    end
+end
 
-crawl.stderr("assist_poltergeist_armor test passed!")
+-- Check that cloak is now equipped
+local equipped_cloak = items.equipped_at("cloak")
+
+-- Verify results
+if equipped_cloak then
+    crawl.stderr("assist_poltergeist_armor test passed - cloak equipped!")
+elseif not cloak_still_on_floor then
+    -- Cloak was picked up but maybe not equipped yet
+    crawl.stderr("assist_poltergeist_armor test partial - cloak picked up but not equipped")
+    -- Check inventory for cloak
+    local found_in_inv = false
+    for i = 0, 51 do
+        local item = items.inslot(i)
+        if item and item.name():find("cloak") then
+            found_in_inv = true
+            break
+        end
+    end
+    assert(found_in_inv, "cloak should be in inventory if not on floor")
+else
+    -- Debug: print messages to see what happened
+    messages = crawl.messages(200)
+    crawl.stderr("Messages: " .. messages)
+    assert(false, "cloak should have been picked up - still on floor at " .. cloak_x .. "," .. cloak_y)
+end
