@@ -1260,10 +1260,15 @@ static void _input()
 #ifdef USE_TILE_LOCAL
         cursor_control con(false);
 #endif
-        // In test turn mode, auto-wait instead of getting player input
+        // In test turn mode, process macro keys if available, otherwise auto-wait
         command_type cmd;
         if (crawl_state.test_run_turns)
-            cmd = you.turn_is_over ? CMD_NO_CMD : CMD_WAIT;
+        {
+            if (has_pending_input())
+                cmd = you.turn_is_over ? CMD_NO_CMD : _get_next_cmd();
+            else
+                cmd = you.turn_is_over ? CMD_NO_CMD : CMD_WAIT;
+        }
         else
             cmd = you.turn_is_over ? CMD_NO_CMD : _get_next_cmd();
 
@@ -1366,6 +1371,9 @@ void run_turns_for_test(int n)
         you.hp_max = 100;
         you.hp = 100;
     }
+
+    // Set need_save so travel/pathfinding works (they assert this)
+    crawl_state.need_save = true;
 
     crawl_state.test_run_turns = true;
     crawl_state.test_exit_loop = false;

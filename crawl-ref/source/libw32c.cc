@@ -512,6 +512,9 @@ void clear_to_end_of_line()
 
 void clrscr_sys()
 {
+    if (_headless_mode)
+        return;
+
     int x,y;
     COORD source;
     SMALL_RECT target;
@@ -689,7 +692,9 @@ static void cprintf_aux(const char *s)
     // early out -- not initted yet
     if (outbuf == nullptr)
     {
-        printf("%ls", OUTW(s));
+        // In headless mode, don't print to stdout
+        if (!_headless_mode)
+            printf("%ls", OUTW(s));
         return;
     }
 
@@ -860,6 +865,10 @@ int getch_ck()
 
     KEY_EVENT_RECORD *kr;
 
+    // In headless mode, no console input is available
+    if (_headless_mode)
+        return ESCAPE;
+
     update_screen();
 
     // handle key repeats
@@ -876,7 +885,10 @@ int getch_ck()
             return ESCAPE;
 
         if (ReadConsoleInputW(inbuf, &ir, 1, &nread) == 0)
-            fputs("Error in ReadConsoleInputW()!", stderr);
+        {
+            fputs("Error in ReadConsoleInputW()!\n", stderr);
+            return ESCAPE;  // Break out of loop on error
+        }
         if (nread > 0)
         {
             // ignore if it isn't a keyboard event.
@@ -917,6 +929,9 @@ int getch_ck()
 
 bool kbhit()
 {
+    if (_headless_mode)
+        return false;
+
     if (crawl_state.seen_hups)
         return false;
 
@@ -948,6 +963,9 @@ void delay(unsigned int ms)
 
 void puttext(int x1, int y1, const crawl_view_buffer &vbuf)
 {
+    if (_headless_mode)
+        return;
+
     const screen_cell_t *cell = vbuf;
     const coord_def size = vbuf.size();
     for (int y = 0; y < size.y; ++y)
@@ -965,6 +983,9 @@ void puttext(int x1, int y1, const crawl_view_buffer &vbuf)
 
 void update_screen()
 {
+    if (_headless_mode)
+        return;
+
     // see if we have a dirty area
     if (dirty_area_start.X == dirty_area_end.X)
         return;
