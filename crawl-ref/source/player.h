@@ -137,11 +137,21 @@ enum player_trigger_type
     NUM_PLAYER_TRIGGER_TYPES,
 };
 
-// needed for assert in is_player()
+// Multiplayer: player array with active-player switching.
+// In single-player mode, only players[0] is used.
+constexpr int MAX_PLAYERS = 4;
+
 #ifdef DEBUG_GLOBALS
-#define you (*real_you)
+extern player *real_players;
+#define players real_players
+#else
+extern player players[MAX_PLAYERS];
 #endif
-extern player you;
+
+extern int num_players;
+extern int active_player_idx;
+
+#define you (players[active_player_idx])
 
 typedef FixedVector<int, NUM_DURATIONS> durations_t;
 class player : public actor
@@ -156,6 +166,11 @@ public:
     string chr_species_name;
     string chr_class_name;
     string chr_god_name;
+
+    // ---------------
+    // Multiplayer data:
+    // ---------------
+    int player_index = 0;       // 0..MAX_PLAYERS-1
 
     // ---------------
     // Permanent data:
@@ -671,9 +686,6 @@ public:
     int get_max_xl() const;
     bool is_player() const override
     {
-#ifndef DEBUG_GLOBALS
-        ASSERT(this == (actor*)&you); // there can be only one
-#endif
         return true;
     }
     monster* as_monster() override { return nullptr; }

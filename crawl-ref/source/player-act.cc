@@ -42,7 +42,7 @@
 
 int player::mindex() const
 {
-    return MHITYOU;
+    return MHITYOU_0 + player_index;
 }
 
 kill_category player::kill_alignment() const

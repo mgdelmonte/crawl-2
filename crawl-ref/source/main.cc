@@ -21,6 +21,9 @@
 #if defined(UNIX) || defined(TARGET_COMPILER_MINGW)
 # include <unistd.h>
 #endif
+#include <poll.h>
+#include <spawn.h>
+extern char **environ;
 
 #ifndef TARGET_OS_WINDOWS
 # include <langinfo.h>
@@ -45,6 +48,7 @@
 #include "colour.h"
 #include "command.h"
 #include "coord.h"
+#include "coordit.h"
 #include "corpse.h"
 #include "crash.h"
 #include "database.h"
@@ -102,6 +106,11 @@
 #include "mon-util.h"
 #include "mutation.h"
 #include "movement.h"
+#include "multiplayer.h"
+#include "mp-server.h"
+#include "mp-client.h"
+#include "json.h"
+#include "json-wrapper.h"
 #include "nearby-danger.h"
 #include "notes.h"
 #include "options.h"
@@ -143,6 +152,7 @@
 #include "transform.h"
 #include "traps.h"
 #include "travel.h"
+#include "ui.h"
 #include "uncancel.h"
 #include "version.h"
 #include "viewchar.h"
@@ -171,7 +181,13 @@ CLua dlua(false);      // Lua interpreter for the dungeon builder.
 crawl_environment env; // Requires dlua.
 crawl_tile_environment tile_env;
 
-player you;
+#ifdef DEBUG_GLOBALS
+player *real_players;
+#else
+player players[MAX_PLAYERS];
+#endif
+int num_players = 1;
+int active_player_idx = 0;
 
 game_state crawl_state;
 
@@ -193,6 +209,12 @@ const struct coord_def Compass[9] =
 // Functions in main module
 static void _launch_game_loop();
 NORETURN static void _launch_game();
+
+// Multiplayer client functions.
+static void _client_game();
+static void _client_input_loop();
+static string _client_key_to_command(int key);
+static void _client_update_state(const string& json_msg);
 
 static void _do_berserk_no_combat_penalty();
 
@@ -254,7 +276,7 @@ int main(int argc, char *argv[])
 #endif
 #ifdef DEBUG_GLOBALS
     real_Options = new game_options();
-    real_you = new player();
+    real_players = new player[MAX_PLAYERS];
     real_clua = new CLua(true);
     real_dlua = new CLua(false);
     real_crawl_state = new game_state();
@@ -387,8 +409,733 @@ static void _reset_game()
 #endif
 }
 
+// ---------- Multiplayer client functions ----------
+
+// Map a keypress to a JSON command string for the host.
+static string _client_key_to_command(int key)
+{
+    int dx = 0, dy = 0;
+    bool is_move = true;
+
+    switch (key)
+    {
+    // Arrow keys
+    case CK_UP:    dx =  0; dy = -1; break;
+    case CK_DOWN:  dx =  0; dy =  1; break;
+    case CK_LEFT:  dx = -1; dy =  0; break;
+    case CK_RIGHT: dx =  1; dy =  0; break;
+
+    // Numpad diagonals
+    case CK_HOME:  dx = -1; dy = -1; break;  // NW
+    case CK_END:   dx = -1; dy =  1; break;  // SW
+    case CK_PGUP:  dx =  1; dy = -1; break;  // NE
+    case CK_PGDN:  dx =  1; dy =  1; break;  // SE
+
+    // Vi keys
+    case 'h': dx = -1; dy =  0; break;  // W
+    case 'j': dx =  0; dy =  1; break;  // S
+    case 'k': dx =  0; dy = -1; break;  // N
+    case 'l': dx =  1; dy =  0; break;  // E
+    case 'y': dx = -1; dy = -1; break;  // NW
+    case 'u': dx =  1; dy = -1; break;  // NE
+    case 'b': dx = -1; dy =  1; break;  // SW
+    case 'n': dx =  1; dy =  1; break;  // SE
+
+    // Wait
+    case '.':
+    case 's':
+    case '5':
+        is_move = false;
+        break;
+
+    default:
+        return "";
+    }
+
+    JsonNode *cmd = json_mkobject();
+    if (is_move)
+    {
+        json_append_member(cmd, "cmd", json_mkstring("move"));
+        json_append_member(cmd, "dx", json_mknumber(dx));
+        json_append_member(cmd, "dy", json_mknumber(dy));
+    }
+    else
+    {
+        json_append_member(cmd, "cmd", json_mkstring("wait"));
+    }
+
+    char *encoded = json_encode(cmd);
+    string result(encoded);
+    free(encoded);
+    json_delete(cmd);
+    return result;
+}
+
+// Update the client display based on a game_state message from the host.
+static void _client_update_state(const string& json_msg)
+{
+    JsonNode *node = json_decode(json_msg.c_str());
+    if (!node)
+        return;
+
+    int my_idx = mp_client.player_idx();
+
+    JsonNode *player_arr = json_find_member(node, "players");
+    if (player_arr && player_arr->tag == JSON_ARRAY)
+    {
+        JsonNode *pdata;
+        json_foreach(pdata, player_arr)
+        {
+            JsonNode *idx_n    = json_find_member(pdata, "idx");
+            JsonNode *x_n      = json_find_member(pdata, "x");
+            JsonNode *y_n      = json_find_member(pdata, "y");
+            JsonNode *hp_n     = json_find_member(pdata, "hp");
+            JsonNode *hp_max_n = json_find_member(pdata, "hp_max");
+            JsonNode *name_n   = json_find_member(pdata, "name");
+
+            if (!idx_n)
+                continue;
+
+            int idx = (int)idx_n->number_;
+            int x = x_n ? (int)x_n->number_ : 0;
+            int y = y_n ? (int)y_n->number_ : 0;
+
+            if (idx == my_idx)
+            {
+                // Update our player position and stats.
+                you.set_position(coord_def(x, y));
+                if (hp_n)
+                    you.hp = (int)hp_n->number_;
+                if (hp_max_n)
+                    you.hp_max = (int)hp_max_n->number_;
+            }
+            else if (idx >= 0 && idx < num_players)
+            {
+                // Update other player positions.
+                players[idx].set_position(coord_def(x, y));
+                if (name_n && name_n->tag == JSON_STRING)
+                    players[idx].your_name = name_n->string_;
+                if (hp_n)
+                    players[idx].hp = (int)hp_n->number_;
+                if (hp_max_n)
+                    players[idx].hp_max = (int)hp_max_n->number_;
+            }
+        }
+    }
+
+    json_delete(node);
+}
+
+// Client input loop: receive state from host, send commands.
+// Uses SDL input (tiles) or raw terminal input (console).
+static void _client_input_loop()
+{
+    bool my_turn = false;
+
+    while (mp_client.is_connected())
+    {
+        // Poll for messages from host.
+        auto messages = mp_client.poll_messages();
+        for (auto& msg : messages)
+        {
+            JsonNode *node = json_decode(msg.c_str());
+            if (!node)
+                continue;
+
+            JsonNode *type_node = json_find_member(node, "type");
+            string msg_type;
+            if (type_node && type_node->tag == JSON_STRING)
+                msg_type = type_node->string_;
+
+            if (msg_type == "game_state")
+            {
+                _client_update_state(msg);
+
+                // Check if it's our turn based on acted status.
+                JsonNode *player_arr = json_find_member(node, "players");
+                if (player_arr && player_arr->tag == JSON_ARRAY)
+                {
+                    JsonNode *pdata;
+                    json_foreach(pdata, player_arr)
+                    {
+                        JsonNode *idx_n = json_find_member(pdata, "idx");
+                        JsonNode *acted_n = json_find_member(pdata, "acted");
+                        JsonNode *alive_n = json_find_member(pdata, "alive");
+                        if (idx_n && (int)idx_n->number_ == mp_client.player_idx())
+                        {
+                            bool alive = alive_n ? alive_n->bool_ : false;
+                            bool acted = acted_n ? acted_n->bool_ : false;
+                            my_turn = alive && !acted;
+                        }
+                    }
+                }
+
+                // Redraw after state update.
+                viewwindow();
+                update_screen();
+            }
+            else if (msg_type == "turn_start")
+            {
+                my_turn = true;
+            }
+            else if (msg_type == "level_data")
+            {
+                // Update dungeon grid from host data.
+                JsonNode *grid_node = json_find_member(node, "grid");
+                if (grid_node && grid_node->tag == JSON_ARRAY)
+                {
+                    int i = 0;
+                    JsonNode *val;
+                    json_foreach(val, grid_node)
+                    {
+                        int x = i % GXM;
+                        int y = i / GXM;
+                        if (x < GXM && y < GYM)
+                        {
+                            dungeon_feature_type feat =
+                                static_cast<dungeon_feature_type>((int)val->number_);
+                            env.grid[x][y] = feat;
+                            // Mark cell as seen so the renderer draws it.
+                            env.map_knowledge(coord_def(x, y)).set_feature(feat);
+                            env.map_knowledge(coord_def(x, y)).flags
+                                |= MAP_SEEN_FLAG | MAP_VISIBLE_FLAG;
+                        }
+                        i++;
+                    }
+                }
+                viewwindow();
+                update_screen();
+            }
+
+            json_delete(node);
+        }
+
+        // If our turn, check for input and send commands.
+        if (my_turn && (has_pending_input() || kbhit()))
+        {
+            int key = getchm(KMC_DEFAULT);
+            string json_cmd = _client_key_to_command(key);
+            if (!json_cmd.empty())
+            {
+                mp_client.send_command(json_cmd);
+                my_turn = false;
+            }
+        }
+
+#ifdef USE_TILE_LOCAL
+        ui::pump_events(0);
+#endif
+        usleep(10000); // 10ms
+    }
+}
+
+// Main client game function: connect to host, wait for game_start,
+// then enter input loop with tiles rendering.
+static void _client_game()
+{
+    // Use a separate save directory for the client to avoid database
+    // and save file conflicts with the host (or other clients).
+    if (!Options.save_dir.empty())
+    {
+        Options.save_dir = catpath(Options.save_dir, "mp-clients/");
+        check_mkdir("MP client save dir", &Options.save_dir);
+    }
+
+    // Initialize data tables (monster symbols, spells, databases, etc.)
+    // so that viewwindow() can render the dungeon.
+    initialize_game_data();
+
+    // Set up console/tiles rendering.
+    console_startup();
+    crawl_state.io_inited = true;
+
+    // Parse host:port from mp_connect_host.
+    string host_str = crawl_state.mp_connect_host;
+    int port = crawl_state.mp_port;
+
+    size_t colon_pos = host_str.find(':');
+    if (colon_pos != string::npos)
+    {
+        port = atoi(host_str.substr(colon_pos + 1).c_str());
+        host_str = host_str.substr(0, colon_pos);
+    }
+
+    if (host_str.empty())
+        host_str = "localhost";
+
+    mprf(MSGCH_PLAIN, "Connecting to %s:%d...", host_str.c_str(), port);
+    viewwindow();
+    update_screen();
+
+    if (!mp_client.connect_to(host_str, port))
+        end(1, false, "Failed to connect to host %s:%d.",
+            host_str.c_str(), port);
+
+    // Wait for welcome message.
+    string welcome_msg = mp_client.wait_for_message("welcome", 30000);
+    if (welcome_msg.empty())
+        end(1, false, "Timed out waiting for welcome message.");
+
+    // Parse player index from welcome.
+    JsonNode *welcome = json_decode(welcome_msg.c_str());
+    if (welcome)
+    {
+        JsonNode *idx_node = json_find_member(welcome, "player_idx");
+        if (idx_node)
+        {
+            int my_idx = (int)idx_node->number_;
+            mp_client.set_player_idx(my_idx);
+        }
+        JsonNode *np_node = json_find_member(welcome, "num_players");
+        if (np_node)
+            num_players = (int)np_node->number_;
+        json_delete(welcome);
+    }
+
+    // Set up multiplayer state.
+    mp_state.init(num_players);
+
+    // Set our player name.
+    string pname = Options.game.name;
+    if (pname.empty())
+        pname = make_stringf("Player %d", mp_client.player_idx() + 1);
+    you.your_name = pname;
+
+    // Send player_info to host with our character choices.
+    {
+        JsonNode *info = json_mkobject();
+        json_append_member(info, "type", json_mkstring("player_info"));
+        json_append_member(info, "name", json_mkstring(pname.c_str()));
+
+        if (Options.game.species != SP_UNKNOWN)
+        {
+            json_append_member(info, "species",
+                json_mkstring(species::get_abbrev(Options.game.species)));
+        }
+
+        if (Options.game.job != JOB_UNKNOWN)
+        {
+            json_append_member(info, "job",
+                json_mkstring(get_job_abbrev(Options.game.job)));
+        }
+
+        char *encoded = json_encode(info);
+        mp_client.send_command(string(encoded));
+        free(encoded);
+        json_delete(info);
+    }
+
+    mprf(MSGCH_PLAIN, "Connected as %s. Waiting for game to start...", pname.c_str());
+    viewwindow();
+    update_screen();
+
+    // Wait for game_start.
+    string start_msg = mp_client.wait_for_message("game_start", 120000);
+    if (start_msg.empty())
+        end(1, false, "Timed out waiting for game start.");
+
+    mprf(MSGCH_PLAIN, "Game started!");
+    viewwindow();
+    update_screen();
+
+    // Enter client input loop (handles level_data, game_state, and input).
+    _client_input_loop();
+
+    _exit(0);
+}
+
+// Process a JSON command from a remote multiplayer client.
+static void _process_mp_command(int player_idx, const string& json_cmd)
+{
+    JsonNode *node = json_decode(json_cmd.c_str());
+    if (!node)
+        return;
+
+    string cmd_type;
+    JsonNode *type_node = json_find_member(node, "cmd");
+    if (type_node && type_node->tag == JSON_STRING)
+        cmd_type = type_node->string_;
+
+    const int prev_idx = active_player_idx;
+    active_player_idx = player_idx;
+
+    if (cmd_type == "move")
+    {
+        JsonNode *dx_node = json_find_member(node, "dx");
+        JsonNode *dy_node = json_find_member(node, "dy");
+        if (dx_node && dy_node)
+        {
+            const int dx = (int)dx_node->number_;
+            const int dy = (int)dy_node->number_;
+            // Use the movement command.
+            coord_def move(dx, dy);
+            you.turn_is_over = false;
+            move_player_action(move);
+        }
+    }
+    else if (cmd_type == "wait")
+    {
+        you.turn_is_over = true;
+        you.time_taken = player_speed();
+    }
+
+    if (you.turn_is_over)
+        mp_state.player_has_acted[player_idx] = true;
+
+    active_player_idx = prev_idx;
+    json_delete(node);
+}
+
+// Place a newly-connected player near the host player.
+static void _place_new_player(int pidx)
+{
+    coord_def spawn_pos = you.pos();
+    for (distance_iterator di(you.pos(), true, true, 2); di; ++di)
+    {
+        if (in_bounds(*di) && !actor_at(*di)
+            && env.grid(*di) == DNGN_FLOOR)
+        {
+            spawn_pos = *di;
+            break;
+        }
+    }
+    players[pidx].set_position(spawn_pos);
+}
+
+// Handle incoming player_info message from a connecting client.
+static void _handle_player_info(int pidx, const string& json_str)
+{
+    JsonNode *node = json_decode(json_str.c_str());
+    if (!node)
+        return;
+
+    JsonNode *type_n = json_find_member(node, "type");
+    if (!type_n || type_n->tag != JSON_STRING
+        || string(type_n->string_) != "player_info")
+    {
+        json_delete(node);
+        return;
+    }
+
+    JsonNode *name_n = json_find_member(node, "name");
+    if (name_n && name_n->tag == JSON_STRING)
+        players[pidx].your_name = name_n->string_;
+
+    JsonNode *sp_n = json_find_member(node, "species");
+    if (sp_n && sp_n->tag == JSON_STRING)
+    {
+        species_type sp = species::from_abbrev(sp_n->string_);
+        if (sp != SP_UNKNOWN)
+            players[pidx].species = sp;
+    }
+
+    JsonNode *job_n = json_find_member(node, "job");
+    if (job_n && job_n->tag == JSON_STRING)
+    {
+        job_type jb = get_job_by_abbrev(job_n->string_);
+        if (jb != JOB_UNKNOWN)
+            players[pidx].char_class = jb;
+    }
+
+    mp_state.player_info_received[pidx] = true;
+
+    // Place the player now that we have their info.
+    _place_new_player(pidx);
+
+    mprf(MSGCH_PLAIN,
+         "Player %d joined: %s the %s %s",
+         pidx + 1,
+         players[pidx].your_name.c_str(),
+         species::name(players[pidx].species).c_str(),
+         get_job_name(players[pidx].char_class));
+
+    json_delete(node);
+}
+
+// Start the game once all players have connected and sent player_info.
+// Broadcasts game_start, level_data, and initial game_state.
+static void _mp_start_game()
+{
+    mp_state.game_started = true;
+
+    mprf(MSGCH_PLAIN, "All players ready! Game starting.");
+
+    // Broadcast game_start.
+    JsonNode *gs_msg = json_mkobject();
+    json_append_member(gs_msg, "type", json_mkstring("game_start"));
+    json_append_member(gs_msg, "num_players",
+                       json_mknumber(num_players));
+    char *gs_encoded = json_encode(gs_msg);
+    mp_server.broadcast(string(gs_encoded));
+    free(gs_encoded);
+    json_delete(gs_msg);
+
+    // Send level data so clients can render the map.
+    mp_server.broadcast_level_data();
+
+    // Send initial game state so clients know player positions.
+    mp_server.broadcast_game_state();
+
+    viewwindow();
+    update_screen();
+}
+
+// Poll for new connections and player_info messages.
+// Called from the SDL event loop via ui::pump_callback so that
+// connections are accepted even while _input() blocks for keys.
+static void _mp_poll_connections()
+{
+    if (mp_state.game_started)
+        return;
+
+    // Try to accept new connections (non-blocking).
+    if (!mp_state.all_connected())
+    {
+        bool accept_error = false;
+        if (mp_server.try_accept_connection(accept_error, 0))
+        {
+            for (int i = 1; i < num_players; i++)
+            {
+                if (!mp_state.player_connected[i]
+                    && mp_server.is_player_connected(i))
+                {
+                    mp_state.player_connected[i] = true;
+                    mprf(MSGCH_PLAIN, "Player %d connected.", i + 1);
+                    viewwindow();
+                    update_screen();
+                }
+            }
+        }
+    }
+
+    // Poll for player_info from connected clients.
+    if (mp_state.all_connected() && !mp_state.all_info_received())
+    {
+        auto commands = mp_server.poll_commands();
+        for (auto& cmd_pair : commands)
+        {
+            const int pidx = cmd_pair.first;
+            if (pidx < 1 || pidx >= num_players)
+                continue;
+            if (mp_state.player_info_received[pidx])
+                continue;
+            _handle_player_info(pidx, cmd_pair.second);
+            viewwindow();
+            update_screen();
+        }
+    }
+
+    // Start the game once all players are ready.
+    if (mp_state.all_connected() && mp_state.all_info_received()
+        && !mp_state.game_started)
+    {
+        _mp_start_game();
+    }
+}
+
+// Multiplayer host input loop: process local + remote player input,
+// call world_reacts when all players have acted.
+//
+// Pre-game phase: uses _input() normally so the UI is fully functional
+// (inventory, help, skills, etc.). Connection polling runs in the
+// background via ui::pump_callback. Game actions are cancelled until
+// all players have connected.
+//
+// In-game phase: processes host and remote commands, advances turns
+// when all players have acted.
+static void _mp_host_input()
+{
+    // --- Pre-game phase ---
+    if (!mp_state.game_started)
+    {
+        // Always poll for connections first (non-blocking).
+        _mp_poll_connections();
+
+        // If the game just started via polling, proceed to in-game phase.
+        if (mp_state.game_started)
+            return;
+
+#ifdef USE_TILE_LOCAL
+        // Tiles: install pump callback so connections are accepted while
+        // _input() blocks waiting for user input in the SDL event loop.
+        ui::pump_callback = _mp_poll_connections;
+
+        // Use normal _input() — UI works fully (help, inventory, etc.)
+        _input();
+
+        // If the game started during _input() (callback triggered),
+        // clear the callback and proceed.
+        if (mp_state.game_started)
+        {
+            ui::pump_callback = nullptr;
+            you.turn_is_over = false;
+            return;
+        }
+
+        // If host tried to take a game action, cancel it.
+        if (you.turn_is_over)
+        {
+            you.turn_is_over = false;
+            int missing = 0;
+            for (int i = 1; i < num_players; i++)
+                if (!mp_state.player_connected[i])
+                    missing++;
+            if (missing > 0)
+                mprf(MSGCH_PLAIN,
+                     "Can't act yet: waiting for %d player(s)...",
+                     missing);
+            else
+                mprf(MSGCH_PLAIN,
+                     "Can't act yet: waiting for player info...");
+        }
+#else
+        // Console: _input() blocks with no event pump, so only call it
+        // when there's pending input to avoid blocking connection polling.
+        if (has_pending_input() || kbhit())
+        {
+            _input();
+            if (you.turn_is_over && !mp_state.game_started)
+                you.turn_is_over = false;
+        }
+        else
+            usleep(10000); // 10ms — avoid spinning
+#endif
+        return;
+    }
+
+    // Clear pump callback once game is running.
+    if (ui::pump_callback)
+        ui::pump_callback = nullptr;
+
+    // --- In-game phase: process commands and advance turns ---
+
+    // Poll for remote player commands.
+    bool processed_any = false;
+    auto commands = mp_server.poll_commands();
+    for (auto& cmd_pair : commands)
+    {
+        const int pidx = cmd_pair.first;
+        const string& json_cmd = cmd_pair.second;
+
+        if (pidx < 0 || pidx >= num_players)
+            continue;
+        if (mp_state.player_has_acted[pidx])
+            continue;
+        if (!mp_state.player_alive[pidx])
+            continue;
+
+        _process_mp_command(pidx, json_cmd);
+        processed_any = true;
+
+        if (mp_state.player_has_acted[pidx])
+            mp_server.broadcast_game_state();
+    }
+
+    // Handle host player (player 0) input if not yet acted.
+    // Only enter _input() when there is actually pending input to avoid
+    // blocking on _get_next_cmd() which waits for SDL events.
+    if (!mp_state.player_has_acted[0])
+    {
+        active_player_idx = 0;
+        if (has_pending_input() || kbhit())
+        {
+            _input();
+            // _input() calls world_reacts() when turn_is_over.
+            // world_reacts() in MP mode will mark us as acted and
+            // defer shared effects until all players have acted.
+        }
+
+        // After host acts, broadcast state so clients see the host's move.
+        if (mp_state.player_has_acted[0])
+        {
+            mp_server.broadcast_game_state();
+
+            if (!mp_state.all_acted())
+            {
+                // Show which players we're waiting for.
+                for (int i = 1; i < num_players; i++)
+                {
+                    if (mp_state.player_alive[i]
+                        && !mp_state.player_has_acted[i])
+                    {
+                        mprf(MSGCH_PLAIN, "Waiting for %s...",
+                             players[i].your_name.c_str());
+                    }
+                }
+                viewwindow();
+                update_screen();
+            }
+        }
+    }
+
+    // If all have acted, run shared world effects.
+    if (mp_state.all_acted() && !mp_state.turn_just_completed)
+    {
+        mp_state.turn_just_completed = true;
+
+        // Run shared world effects (monsters, clouds, etc.)
+        for (int i = 0; i < num_players; i++)
+        {
+            if (!mp_state.player_alive[i])
+                continue;
+            if (i != 0)
+            {
+                active_player_idx = i;
+                player_reacts();
+            }
+        }
+
+        // Shared world reactions.
+        active_player_idx = 0;
+        abyss_morph();
+        apply_noises();
+        handle_monsters(true);
+        fire_final_effects();
+
+        manage_clouds();
+
+        for (int i = 0; i < num_players; i++)
+        {
+            if (!mp_state.player_alive[i])
+                continue;
+            active_player_idx = i;
+            player_reacts_to_monsters();
+        }
+        active_player_idx = 0;
+
+        clear_monster_flags();
+        viewwindow();
+        update_screen();
+
+        mp_state.reset_turn();
+        mp_state.turn_just_completed = false;
+
+        // Notify each living remote client that a new turn has started.
+        for (int i = 1; i < num_players; i++)
+        {
+            if (mp_state.player_alive[i])
+                mp_server.send_turn_start(i, mp_state.turn_number);
+        }
+
+        mp_server.broadcast_game_state();
+    }
+
+    active_player_idx = 0;
+
+    // Avoid 100% CPU spin while waiting for input.
+    if (!processed_any && !mp_state.all_acted())
+        usleep(10000); // 10ms
+}
+
 static void _launch_game_loop()
 {
+    // If connecting as a multiplayer client, skip normal game startup.
+    if (crawl_state.mp_connect)
+    {
+        _client_game();
+        return;
+    }
+
     bool game_ended = false;
     do
     {
@@ -494,9 +1241,100 @@ NORETURN static void _launch_game()
 
     run_uncancels();
 
+    // Initialize multiplayer if requested.
+    if (crawl_state.mp_host)
+    {
+        num_players = crawl_state.mp_host_players;
+        mp_state.init(num_players);
+
+        if (!mp_server.start(crawl_state.mp_port, num_players))
+        {
+            end(1, false, "Failed to start multiplayer server: %s",
+                mp_server.last_error().c_str());
+        }
+
+        // Don't place other players yet — they'll be placed when they
+        // connect and send player_info. Just initialize defaults.
+        for (int i = 1; i < num_players; i++)
+        {
+            players[i].species = you.species;
+            players[i].char_class = you.char_class;
+            players[i].your_name = make_stringf("Player %d", i + 1);
+            players[i].hp = players[i].hp_max = you.hp_max;
+            players[i].magic_points = you.magic_points;
+            players[i].max_magic_points = you.max_magic_points;
+        }
+
+        // Auto-spawn client processes if --spawn was given.
+        if (crawl_state.mp_spawn)
+        {
+            int needed = num_players - 1;
+            int to_spawn = (crawl_state.mp_spawn_count > 0)
+                           ? min(crawl_state.mp_spawn_count, needed)
+                           : needed;
+
+            string exe_path = crawl_state.command_line_arguments.empty()
+                              ? "./crawl"
+                              : crawl_state.command_line_arguments[0];
+            char abs_buf[4096];
+            if (realpath(exe_path.c_str(), abs_buf))
+                exe_path = abs_buf;
+
+            string connect_arg = make_stringf("localhost:%d",
+                                              crawl_state.mp_port);
+
+            for (int i = 0; i < to_spawn; i++)
+            {
+                string char_spec = make_stringf("Player%d:HuFi",
+                                                i + 2);
+
+                const char *spawn_argv[] = {
+                    exe_path.c_str(),
+                    "--connect", connect_arg.c_str(),
+                    "--char", char_spec.c_str(),
+                    nullptr
+                };
+
+                pid_t pid = 0;
+                int spawn_err = posix_spawn(&pid, exe_path.c_str(),
+                    nullptr, nullptr,
+                    const_cast<char *const *>(spawn_argv),
+                    environ);
+                if (spawn_err == 0 && pid > 0)
+                {
+                    mprf(MSGCH_PLAIN, "Spawned client %d (pid %d).",
+                         i + 1, (int)pid);
+                }
+                else
+                {
+                    mprf(MSGCH_ERROR,
+                         "Failed to spawn client process: %s",
+                         strerror(spawn_err));
+                }
+            }
+        }
+
+        mprf(MSGCH_PLAIN, "Waiting for %d player(s) to connect...",
+             num_players - 1);
+        viewwindow();
+        update_screen();
+
+        // Don't block here — the game loop (_mp_host_input) will accept
+        // connections and process player_info while keeping the UI live.
+    }
+
     cursor_control ccon(!Options.use_fake_player_cursor);
-    while (true)
-        _input();
+
+    if (mp_state.enabled)
+    {
+        while (true)
+            _mp_host_input();
+    }
+    else
+    {
+        while (true)
+            _input();
+    }
 }
 
 static void _show_commandline_options_help()
@@ -2640,6 +3478,28 @@ void world_reacts()
     check_banished();
     _check_sanctuary();
     check_spectral_weapon(you);
+
+    // In multiplayer mode, mark this player as having acted.
+    // Defer shared world effects (monsters, environment) until all
+    // players have acted. Per-player reactions still run immediately.
+    if (mp_state.enabled)
+    {
+        mp_state.player_has_acted[active_player_idx] = true;
+
+        if (!crawl_state.game_is_arena())
+            player_reacts();
+
+        ASSERT(you.time_taken >= 0);
+        you.elapsed_time += you.time_taken;
+
+        if (you.num_turns != -1 && you.num_turns < INT_MAX)
+            you.num_turns++;
+
+        // Update view but don't run monsters yet.
+        viewwindow();
+        update_screen();
+        return;
+    }
 
     run_environment_effects();
 

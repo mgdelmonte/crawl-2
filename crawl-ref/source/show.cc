@@ -26,6 +26,7 @@
 #include "terrain.h"
 #include "rltiles/tiledef-main.h"
 #ifdef USE_TILE
+ #include "tilepick.h"
  #include "tileview.h"
 #endif
 #include "tiles-build-specific.h"
@@ -33,6 +34,10 @@
 #include "travel.h"
 #include "viewgeom.h"
 #include "viewmap.h"
+#include "multiplayer.h"
+#include "mon-info.h"
+#include "species.h"
+#include "jobs.h"
 
 show_type::show_type()
     : cls(SH_NOTHING),
@@ -453,6 +458,36 @@ void show_update_at(const coord_def &gp, layers_type layers)
     force_show_update_at(gp, layers);
 }
 
+// Register another player in map_knowledge so tiles/examine/hover can see them.
+static void _update_other_player(const player& pl, const coord_def &gp)
+{
+    monster_info mi(MONS_PLAYER);
+    mi.pos = gp;
+    mi.attitude = ATT_FRIENDLY;
+    mi.type = MONS_PLAYER;
+    mi.base_type = MONS_PLAYER;
+    mi.mname = pl.your_name;
+    mi.props["name"] = pl.your_name;
+
+    // Set ghost info so the name and species appear.
+    mi.i_ghost.species = pl.species;
+    mi.i_ghost.job = pl.char_class;
+    mi.i_ghost.religion = GOD_NO_GOD;
+    mi.i_ghost.best_skill = SK_FIGHTING;
+    mi.i_ghost.best_skill_rank = 2;
+    mi.i_ghost.xl_rank = 3;
+
+#ifdef USE_TILE
+    mi.props[MONSTER_TILE_KEY] = (int)tileidx_player_shadow(pl.species);
+#endif
+
+    mi.hd = pl.experience_level;
+    mi.dam = MDAM_OKAY;
+    mi.threat = MTHRT_TRIVIAL;
+
+    env.map_knowledge(gp).set_monster(mi);
+}
+
 void force_show_update_at(const coord_def &gp, layers_type layers)
 {
     // The sequence is grid, items, clouds, monsters.
@@ -463,6 +498,22 @@ void force_show_update_at(const coord_def &gp, layers_type layers)
 
     if (layers & Layer::MONSTERS)
     {
+        // Check for other multiplayer players at this position.
+        if (mp_state.enabled)
+        {
+            for (int i = 0; i < num_players; i++)
+            {
+                if (i == active_player_idx)
+                    continue;
+                if (!mp_state.player_alive[i])
+                    continue;
+                if (!mp_state.player_connected[i])
+                    continue;
+                if (players[i].pos() == gp && you.see_cell(gp))
+                    _update_other_player(players[i], gp);
+            }
+        }
+
         monster* mons = monster_at(gp);
         if (mons && mons->alive())
             _update_monster(mons);

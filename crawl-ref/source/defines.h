@@ -52,8 +52,28 @@ enum extra_monster_index_type
     NON_MONSTER  = 27000,                // no monster
 
     MHITNOT = NON_MONSTER,
-    MHITYOU,
+    MHITYOU,                             // 27001 - player 0 (default)
+    MHITYOU_0 = MHITYOU,                // alias for player 0
+    MHITYOU_1,                           // 27002 - player 1
+    MHITYOU_2,                           // 27003 - player 2
+    MHITYOU_3,                           // 27004 - player 3
 };
+
+// Multiplayer foe helpers
+inline bool is_player_foe(int foe)
+{
+    return foe >= MHITYOU_0 && foe <= MHITYOU_3;
+}
+
+inline int player_foe_index(int foe)
+{
+    return foe - MHITYOU_0;
+}
+
+inline int player_to_foe(int player_idx)
+{
+    return MHITYOU_0 + player_idx;
+}
 
 // number of monster attack specs
 #define MAX_NUM_ATTACKS 4

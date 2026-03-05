@@ -51,6 +51,7 @@
 #include "mon-speak.h"
 #include "mon-tentacle.h"
 #include "mon-util.h"
+#include "multiplayer.h"
 #include "mutation.h"
 #include "nearby-danger.h"
 #include "notes.h"
@@ -1491,6 +1492,26 @@ void ouch(int dam, kill_method_type death_type, mid_t source, const char *aux,
 void player_die(kill_method_type death_type, mid_t source, int dam,
                 const char *aux, const char *death_source_name)
 {
+    // In multiplayer, dying doesn't end the game unless all players are dead.
+    if (mp_state.enabled)
+    {
+        const int pidx = active_player_idx;
+        mp_state.player_alive[pidx] = false;
+        mprf(MSGCH_PLAIN, "%s has died!", you.your_name.c_str());
+
+        // Mark as acted so we don't wait for this player.
+        mp_state.player_has_acted[pidx] = true;
+
+        // If all players are dead, fall through to normal death handling.
+        if (mp_state.count_alive() > 0)
+        {
+            // Reset HP so the player object remains valid but inactive.
+            you.hp = 0;
+            return;
+        }
+        // All dead — fall through to normal game over.
+    }
+
     // Is the player being killed by a direct act of Xom?
     if (crawl_state.is_god_acting()
         && crawl_state.which_god_acting() == GOD_XOM

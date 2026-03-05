@@ -3164,8 +3164,14 @@ void render()
     ui_root.swap_buffers();
 }
 
+pump_callback_t pump_callback = nullptr;
+
 void pump_events(int wait_event_timeout)
 {
+    // Run the pump callback (e.g. MP connection polling) each iteration.
+    if (pump_callback)
+        pump_callback();
+
     int macro_key = macro_buf_get();
 
 #ifdef USE_TILE_LOCAL
@@ -3209,8 +3215,19 @@ void pump_events(int wait_event_timeout)
             break;
         }
 
-        if (!wm || !wm->wait_event(&event, wait_event_timeout))
+        // When a pump callback is active, cap the timeout so the
+        // callback runs frequently (e.g. MP connection polling).
+        int effective_timeout = wait_event_timeout;
+        if (pump_callback && effective_timeout > 50)
+            effective_timeout = 50;
+
+        if (!wm || !wm->wait_event(&event, effective_timeout))
         {
+            if (pump_callback)
+            {
+                pump_callback();
+                continue; // retry after callback
+            }
             if (wait_event_timeout == INT_MAX)
                 continue;
             else

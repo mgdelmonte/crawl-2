@@ -4908,8 +4908,13 @@ actor *monster::get_foe() const
 {
     if (foe == MHITNOT)
         return nullptr;
-    else if (foe == MHITYOU)
-        return friendly() ? nullptr : &you;
+    else if (is_player_foe(foe))
+    {
+        const int pidx = player_foe_index(foe);
+        if (pidx >= num_players || !players[pidx].alive())
+            return nullptr;
+        return friendly() ? nullptr : &players[pidx];
+    }
 
     // Must be a monster!
     monster* my_foe = &env.mons[foe];

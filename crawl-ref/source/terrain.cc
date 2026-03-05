@@ -64,8 +64,9 @@ actor* actor_at(const coord_def& c)
 {
     if (!in_bounds(c))
         return nullptr;
-    if (c == you.pos())
-        return &you;
+    for (int i = 0; i < num_players; i++)
+        if (players[i].alive() && c == players[i].pos())
+            return &players[i];
     return monster_at(c);
 }
 

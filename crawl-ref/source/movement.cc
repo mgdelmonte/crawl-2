@@ -38,6 +38,7 @@
 #include "mon-death.h"
 #include "mon-place.h"
 #include "mon-util.h"
+#include "multiplayer.h"
 #include "nearby-danger.h"
 #include "player.h"
 #include "player-reacts.h"
@@ -888,6 +889,37 @@ static bool _handle_player_step(const coord_def& targ, int& delay, bool rampagin
                                 bool& did_move, bool& did_attack, bool& did_open_door)
 {
     const coord_def initial_pos = you.pos();
+
+    // In multiplayer, check if another player occupies the target.
+    // Players can swap positions with each other.
+    if (mp_state.enabled)
+    {
+        for (int i = 0; i < num_players; i++)
+        {
+            if (i == active_player_idx)
+                continue;
+            if (!mp_state.player_alive[i])
+                continue;
+            if (players[i].pos() == targ)
+            {
+                // Swap positions.
+                const coord_def other_pos = players[i].pos();
+                players[i].set_position(initial_pos);
+                you.set_position(other_pos);
+
+                mprf("You swap places with %s.",
+                     players[i].your_name.c_str());
+
+                // The displaced player's turn is consumed.
+                mp_state.player_has_acted[i] = true;
+
+                did_move = true;
+                delay += player_movement_speed();
+                return true;
+            }
+        }
+    }
+
     monster* mon = monster_at(targ);
     coord_def mon_swap_dest;
     bool fedhas_move = false;

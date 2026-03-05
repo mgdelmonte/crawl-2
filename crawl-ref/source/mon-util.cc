@@ -73,6 +73,8 @@
 #include "timed-effects.h"
 #include "transform.h"
 #include "traps.h"
+
+#include "multiplayer.h"
 #include "unicode.h"
 #include "unwind.h"
 
@@ -861,7 +863,7 @@ bool mons_offers_beogh_conversion_now(const monster& mon)
                 && !mon.is_summoned() && !mon.friendly()
                 && !mon.is_silenced()
                 && !mons_is_confused(mon) && mons_is_seeking(mon)
-                && mon.foe == MHITYOU && !mons_is_immotile(mon)
+                && is_player_foe(mon.foe) && !mons_is_immotile(mon)
                 && you.can_see(mon);
 }
 
@@ -3417,7 +3419,7 @@ bool mons_is_removed(monster_type mc)
 
 bool mons_looks_distracted(const monster& m)
 {
-    return m.foe != MHITYOU && m.behaviour != BEH_BATTY && !m.friendly();
+    return !is_player_foe(m.foe) && m.behaviour != BEH_BATTY && !m.friendly();
 }
 
 void mons_start_fleeing_from_sanctuary(monster& mons)
@@ -4948,11 +4950,12 @@ mon_threat_level_type mons_threat_level(const monster &mon, bool real)
 
 bool mons_foe_is_marked(const monster& mon)
 {
-    if (mon.foe == MHITYOU)
+    if (is_player_foe(mon.foe))
     {
-        return (you.duration[DUR_SENTINEL_MARK]
+        const int pidx = player_foe_index(mon.foe);
+        return (players[pidx].duration[DUR_SENTINEL_MARK]
                 || testbits(mon.flags, MF_APOSTLE_BAND))
-               && in_bounds(you.pos());
+               && in_bounds(players[pidx].pos());
     }
     else
         return false;

@@ -4815,6 +4815,12 @@ enum commandline_option_type
 #endif
     CLO_RESET_CACHE,
 
+    CLO_MP_HOST,
+    CLO_MP_CONNECT,
+    CLO_MP_PORT,
+    CLO_MP_SPAWN,
+    CLO_CHAR,
+
     CLO_NOPS
 };
 
@@ -4866,6 +4872,7 @@ static const char *cmd_ops[] =
     "webtiles-socket", "await-connection", "print-webtiles-options",
 #endif
     "reset-cache",
+    "host", "connect", "port", "spawn", "char",
 };
 
 
@@ -6200,6 +6207,98 @@ bool parse_args(int argc, char **argv, bool rc_only)
 
             if (!sscanf(next_arg, "%" SCNu64, &crawl_state.clua_max_memory_mb))
                 return false;
+            nextUsed = true;
+            break;
+
+        case CLO_MP_HOST:
+            if (!next_is_param)
+                return false;
+            if (!rc_only)
+            {
+                crawl_state.mp_host = true;
+                crawl_state.mp_host_players = atoi(next_arg);
+                if (crawl_state.mp_host_players < 2)
+                    crawl_state.mp_host_players = 2;
+                if (crawl_state.mp_host_players > MAX_PLAYERS)
+                    crawl_state.mp_host_players = MAX_PLAYERS;
+            }
+            nextUsed = true;
+            break;
+
+        case CLO_MP_CONNECT:
+            if (!rc_only)
+            {
+                crawl_state.mp_connect = true;
+                if (next_is_param)
+                    crawl_state.mp_connect_host = next_arg;
+                else
+                    crawl_state.mp_connect_host = "localhost:8080";
+            }
+            // Always consume the parameter (even in rc_only pass)
+            // so it's not misinterpreted as a standalone option.
+            if (next_is_param)
+                nextUsed = true;
+            break;
+
+        case CLO_MP_PORT:
+            if (!next_is_param)
+                return false;
+            if (!rc_only)
+                crawl_state.mp_port = atoi(next_arg);
+            nextUsed = true;
+            break;
+
+        case CLO_MP_SPAWN:
+            if (!rc_only)
+            {
+                crawl_state.mp_spawn = true;
+                if (next_is_param)
+                    crawl_state.mp_spawn_count = atoi(next_arg);
+            }
+            if (next_is_param)
+                nextUsed = true;
+            break;
+
+        case CLO_CHAR:
+            // --char Name:SpBg[:weapon]
+            // e.g. --char Zyrix:DeFe or --char Bob:HuBr:mace
+            if (!next_is_param)
+                return false;
+            if (!rc_only)
+            {
+                string charspec(next_arg);
+                // Split on ':'
+                size_t first_colon = charspec.find(':');
+                if (first_colon == string::npos)
+                {
+                    fprintf(stderr,
+                            "--char requires Name:SpBg format "
+                            "(e.g. Zyrix:DeFe)\n");
+                    return false;
+                }
+
+                Options.game.name = charspec.substr(0, first_colon);
+                crawl_state.default_startup_name = Options.game.name;
+
+                string remainder = charspec.substr(first_colon + 1);
+                size_t second_colon = remainder.find(':');
+                string combo = (second_colon != string::npos)
+                               ? remainder.substr(0, second_colon)
+                               : remainder;
+
+                if (combo.length() >= 2)
+                    Options.game.species = _str_to_species(
+                        combo.substr(0, 2));
+                if (combo.length() >= 4)
+                    Options.game.job = str_to_job(
+                        combo.substr(2, 2));
+
+                if (second_colon != string::npos)
+                {
+                    string weapon = remainder.substr(second_colon + 1);
+                    Options.game.weapon = str_to_weapon(weapon);
+                }
+            }
             nextUsed = true;
             break;
 

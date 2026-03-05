@@ -80,7 +80,7 @@ static void _loading_message(string m)
 }
 
 // Initialise a whole lot of stuff...
-static void _initialize()
+void initialize_game_data()
 {
     Options.fixup_options();
 
@@ -1012,7 +1012,7 @@ static bool _exit_type_allows_menu_bypass(game_exit exit)
 
 bool startup_step()
 {
-    _initialize();
+    initialize_game_data();
 
     newgame_def choice   = Options.game;
 

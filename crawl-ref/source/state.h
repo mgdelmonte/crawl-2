@@ -160,6 +160,15 @@ struct game_state
 
     string default_startup_name;
 
+    // Multiplayer settings (from command line).
+    bool mp_host = false;           // --host: act as multiplayer host
+    int  mp_host_players = 1;       // number of total players (including host)
+    bool mp_connect = false;        // --connect: act as multiplayer client
+    string mp_connect_host;         // host address to connect to
+    int  mp_port = 8080;            // --port: TCP port for multiplayer
+    bool mp_spawn = false;          // --spawn: auto-spawn client processes
+    int  mp_spawn_count = -1;       // -1 = fill roster, >0 = spawn that many
+
     // Should flushing a nonempty key buffer error or crash? Used for tests.
     bool nonempty_buffer_flush_errors;
 

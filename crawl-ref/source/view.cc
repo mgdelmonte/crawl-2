@@ -665,7 +665,7 @@ void viewwindow(bool show_updates, bool tiles_only, animation *a, view_renderer 
             if (!is_map_persistent())
                 ash_detect_portals(false);
 
-            if (you.on_current_level)
+            if (you.on_current_level && !crawl_state.mp_connect)
             {
                 // TODO: why on earth is this called from here? It seems like it
                 // should be called directly on changing location, or something

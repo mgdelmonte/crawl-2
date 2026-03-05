@@ -73,6 +73,8 @@
 #include "viewchar.h"
 #include "view.h"
 
+#include "multiplayer.h"
+
 static bool _handle_pickup(monster* mons);
 static bool _monster_move(monster* mons, coord_def& delta);
 static bool _monster_swaps_places(monster* mon, const coord_def& delta);
@@ -361,10 +363,11 @@ static coord_def _get_mons_destination(const monster* mons)
     // Some calculations.
     if ((mons->can_burrow()
          || _mons_can_cast_dig(mons, false))
-        && mons->foe == MHITYOU)
+        && is_player_foe(mons->foe))
     {
-        // Digging monsters always move in a straight line in your direction.
-        delta = you.pos() - mons->pos();
+        // Digging monsters always move in a straight line toward their foe.
+        const actor* foe = mons->get_foe();
+        delta = (foe ? foe->pos() : you.pos()) - mons->pos();
     }
     else
     {
@@ -693,7 +696,7 @@ static coord_def _find_best_step(monster* mons)
         return dir;
 
     // We're not moving towards the player.
-    if (mons->foe != MHITYOU || grid_distance(you.pos(), old_pos + dir) >= old_dist)
+    if (!is_player_foe(mons->foe) || grid_distance(you.pos(), old_pos + dir) >= old_dist)
         return dir;
 
     // Try to find a move that brings us closer to the player while
@@ -1511,7 +1514,7 @@ bool handle_throw(monster* mons, bolt & beem, bool teleport, bool check_only, bo
               && is_range_weapon(*mons->weapon()));
 
     // Don't allow offscreen throwing for now.
-    if (mons->foe == MHITYOU && !you.see_cell(mons->pos()))
+    if (is_player_foe(mons->foe) && !you.see_cell(mons->pos()))
         return false;
 
     // Most monsters won't shoot in melee range, largely for balance reasons.
@@ -2254,7 +2257,7 @@ void handle_monster_move(monster* mons)
     if (!mons->alive())
         return;
 
-    ASSERT(!crawl_state.game_is_arena() || mons->foe != MHITYOU);
+    ASSERT(!crawl_state.game_is_arena() || !is_player_foe(mons->foe));
     ASSERT_IN_BOUNDS_OR_ORIGIN(mons->target);
 
     if (mons->speed >= 100)
@@ -2317,7 +2320,7 @@ void handle_monster_move(monster* mons)
                 if (!mons->wont_attack())
                 {
                     // Otherwise, if it steps into you, cancel other targets.
-                    mons->foe = MHITYOU;
+                    mons->foe = player_to_foe(active_player_idx);
                     mons->target = you.pos();
 
                     if (mons_has_attacks(*mons, true)
@@ -4211,7 +4214,7 @@ void seen_monsters_react()
 bool mon_enemies_around(const monster* mons)
 {
     // If the monster has a foe, return true.
-    if (mons->foe != MHITNOT && mons->foe != MHITYOU)
+    if (mons->foe != MHITNOT && !is_player_foe(mons->foe))
         return true;
 
     if (crawl_state.game_is_arena())

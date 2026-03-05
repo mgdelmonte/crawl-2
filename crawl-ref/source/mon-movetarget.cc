@@ -19,6 +19,8 @@
 #include "terrain.h"
 #include "traps.h"
 
+#include "multiplayer.h"
+
 // If a monster can see but not directly reach the target, and then fails to
 // find a path to get there, mark all surrounding (in a radius of 2) monsters
 // of the same (or greater) movement restrictions as also being unable to
@@ -93,8 +95,9 @@ bool try_pathfind(monster* mon)
     // next turn, and even extend that flag to neighbouring
     // monsters of similar movement restrictions.
 
-    const actor* foe = (mon->friendly() && mon->foe == MHITYOU ? &you
-                                                               : mon->get_foe());
+    const actor* foe = (mon->friendly() && is_player_foe(mon->foe)
+                        ? static_cast<actor*>(&players[player_foe_index(mon->foe)])
+                        : mon->get_foe());
 
     // Trying to pathfind towards nothing in particular; bail out.
     if (!foe)

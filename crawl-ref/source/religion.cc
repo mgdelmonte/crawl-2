@@ -3654,7 +3654,7 @@ static void _join_gozag()
     {
         ASSERT(you.gold >= fee);
         mprf(MSGCH_GOD, "You pay a service fee of %d gold.", fee);
-        you.gold -= fee;
+        you.del_gold(fee);
         you.attribute[ATTR_GOZAG_GOLD_USED] += fee;
     }
     else
@@ -3734,7 +3734,7 @@ static void _join_zin()
         // rich. In that case, you have to donate again more... That the poor
         // widow is not spared doesn't mean the rich can't be milked for more.
         lucre.props[ACQUIRE_KEY] = 0;
-        you.gold -= zin_tithe(lucre, lucre.quantity, true);
+        you.del_gold(zin_tithe(lucre, lucre.quantity, true));
     }
 
     if (you.props.exists(ORCIFICATION_LEVEL_KEY))

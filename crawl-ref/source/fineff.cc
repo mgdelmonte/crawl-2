@@ -1110,7 +1110,7 @@ void trj_spawn_fineff::fire()
 
     unsigned short foe = attack && attack->alive() ? attack->mindex() : MHITNOT;
     // may be ANON_FRIENDLY_MONSTER
-    if (invalid_monster_index(foe) && foe != MHITYOU)
+    if (invalid_monster_index(foe) && !is_player_foe(foe))
         foe = MHITNOT;
 
     // Give spawns the same attitude as TRJ; if TRJ is now dead, make them

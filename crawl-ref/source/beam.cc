@@ -52,6 +52,7 @@
 #include "mon-place.h"
 #include "mon-poly.h"
 #include "mon-util.h"
+#include "multiplayer.h"
 #include "mutation.h"
 #include "nearby-danger.h"
 #include "options.h"
@@ -4535,6 +4536,13 @@ void bolt::affect_player()
 
 bool bolt::ignores_player() const
 {
+    // In multiplayer, player beams pass through allied players (no friendly fire).
+    if (mp_state.enabled && agent() && agent()->is_player()
+        && is_allied_player(&you))
+    {
+        return true;
+    }
+
     // Digging -- don't care.
     if (flavour == BEAM_DIGGING)
         return true;

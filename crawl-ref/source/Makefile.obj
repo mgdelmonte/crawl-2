@@ -168,6 +168,9 @@ mon-transit.o \
 mon-util.o \
 monster.o \
 movement.o \
+mp-client.o \
+mp-server.o \
+multiplayer.o \
 mutation.o \
 nearby-danger.o \
 newgame.o \

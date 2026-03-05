@@ -2905,12 +2905,12 @@ tileidx_t tileidx_player_mons()
     }
 }
 
-tileidx_t tileidx_player_shadow()
+tileidx_t tileidx_player_shadow(species_type sp)
 {
-    if (species::is_draconian(you.species))
+    if (species::is_draconian(sp))
         return TILEP_MONS_PLAYER_SHADOW_DRACONIAN;
 
-    switch (you.species)
+    switch (sp)
     {
         case SP_ANEMOCENTAUR:   return TILEP_MONS_PLAYER_SHADOW_ANEMOCENTAUR;
         case SP_BARACHI:        return TILEP_MONS_PLAYER_SHADOW_BARACHI;
@@ -2942,6 +2942,11 @@ tileidx_t tileidx_player_shadow()
         default:
             return TILEP_MONS_PROGRAM_BUG;
     }
+}
+
+tileidx_t tileidx_player_shadow()
+{
+    return tileidx_player_shadow(you.species);
 }
 #endif // USE_TILE
 

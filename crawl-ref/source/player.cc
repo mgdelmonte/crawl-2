@@ -58,6 +58,7 @@
 #include "mon-behv.h"
 #include "mon-place.h"
 #include "movement.h"
+#include "multiplayer.h"
 #include "mutation.h"
 #include "nearby-danger.h"
 #include "notes.h"
@@ -2665,6 +2666,26 @@ unsigned int gain_exp(unsigned int exp_gained)
 {
     if (crawl_state.game_is_arena())
         return 0;
+
+    // In multiplayer, share XP equally among all living players.
+    if (mp_state.enabled)
+    {
+        const int alive_count = mp_state.count_alive();
+        if (alive_count > 1)
+        {
+            const unsigned int share = exp_gained / alive_count;
+            const int saved_idx = active_player_idx;
+            for (int i = 0; i < num_players; i++)
+            {
+                if (!mp_state.player_alive[i])
+                    continue;
+                active_player_idx = i;
+                you.experience_pool += share;
+            }
+            active_player_idx = saved_idx;
+            return share;
+        }
+    }
 
     you.experience_pool += exp_gained;
 
@@ -8292,6 +8313,16 @@ void player::set_gold(int amount)
                     power.display(false, "You no longer have enough gold to %s.");
             }
             you.redraw_title = true;
+        }
+
+        // In multiplayer, sync gold to all living players (shared pool).
+        if (mp_state.enabled)
+        {
+            for (int i = 0; i < num_players; i++)
+            {
+                if (i != player_index && mp_state.player_alive[i])
+                    players[i].gold = gold;
+            }
         }
     }
 }

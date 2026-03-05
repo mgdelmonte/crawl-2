@@ -42,6 +42,8 @@
 #include "traps.h"
 #include "view.h"
 
+#include "multiplayer.h"
+
 static void _guess_invis_foe_pos(monster* mon)
 {
     const actor* foe          = mon->get_foe();
@@ -70,7 +72,7 @@ static bool _is_valid_foe(monster* mon, unsigned short foe)
     if (mons_is_avatar(mon->type))
         return true;
 
-    if (foe == MHITNOT || foe == MHITYOU)
+    if (foe == MHITNOT || is_player_foe(foe))
         return true;
 
     if (foe < 0 || foe >= MAX_MONSTERS)
@@ -86,6 +88,44 @@ static void _mon_check_foe_invalid(monster* mon)
 {
     if (!_is_valid_foe(mon, mon->foe))
         mon->foe = MHITNOT;
+}
+
+// In multiplayer, find the nearest living player and return its MHITYOU_N foe
+// index. In single-player, just returns MHITYOU (== MHITYOU_0).
+static int _nearest_player_foe(coord_def from)
+{
+    if (!mp_state.enabled)
+        return MHITYOU;
+
+    int best_foe = MHITYOU;
+    int best_dist = INT_MAX;
+    for (int i = 0; i < num_players; i++)
+    {
+        if (!mp_state.player_alive[i])
+            continue;
+        const int dist = grid_distance(from, players[i].pos());
+        if (dist < best_dist)
+        {
+            best_dist = dist;
+            best_foe = player_to_foe(i);
+        }
+    }
+    return best_foe;
+}
+
+// Returns true if any living player is visible to the monster (for proxPlayer).
+static bool _any_player_visible(const monster* mon)
+{
+    if (crawl_state.game_is_arena())
+        return false;
+    for (int i = 0; i < num_players; i++)
+    {
+        if (!mp_state.player_alive[i])
+            continue;
+        if (mon->see_cell(players[i].pos()) && in_bounds(players[i].pos()))
+            return true;
+    }
+    return false;
 }
 
 static bool _mon_tries_regain_los(monster* mon)
@@ -271,11 +311,12 @@ void handle_behaviour(monster* mon)
     bool isNeutral  = mon->neutral();
     bool wontAttack = mon->wont_attack() && !mon->has_ench(ENCH_FRENZIED);
 
-    // Whether the player position is in LOS of the monster
+    // Whether any player position is in LOS of the monster
     // (or we're pretending that it is for purposes of off-level catchup).
-    bool proxPlayer = !crawl_state.game_is_arena()
-                      && ((mon->see_cell(you.pos()) && in_bounds(you.pos())
-                          || (you.doing_monster_catchup && mon->see_cell(env.old_player_pos))));
+    bool proxPlayer = _any_player_visible(mon)
+                      || (!crawl_state.game_is_arena()
+                          && you.doing_monster_catchup
+                          && mon->see_cell(env.old_player_pos));
 
     // If set, pretend the player isn't there, but only for hostile monsters.
     if (proxPlayer && crawl_state.disables[DIS_MON_SIGHT] && !mon->wont_attack())
@@ -306,7 +347,7 @@ void handle_behaviour(monster* mon)
     }
 
     // Make sure monsters are not targeting the player in arena mode.
-    ASSERT(!crawl_state.game_is_arena() || mon->foe != MHITYOU);
+    ASSERT(!crawl_state.game_is_arena() || !is_player_foe(mon->foe));
 
     // Validate current target exists.
     _mon_check_foe_invalid(mon);
@@ -354,7 +395,7 @@ void handle_behaviour(monster* mon)
     // Set friendly target, if they don't already have one.
     // Berserking allies ignore your commands!
     else if (isFriendly
-             && (mon->foe == MHITNOT || mon->foe == MHITYOU)
+             && (mon->foe == MHITNOT || is_player_foe(mon->foe))
              && !mon->berserk_or_frenzied()
              && mon->behaviour != BEH_WITHDRAW
              && !mons_self_destructs(*mon)
@@ -372,7 +413,7 @@ void handle_behaviour(monster* mon)
         && (mon->has_ench(ENCH_FRENZIED)
             || ((mon->berserk() || mons_self_destructs(*mon))
                 && (mon->foe == MHITNOT
-                    || isFriendly && mon->foe == MHITYOU))))
+                    || isFriendly && is_player_foe(mon->foe)))))
     {
         // Intelligent monsters prefer to attack the player,
         // even when berserking.
@@ -381,7 +422,7 @@ void handle_behaviour(monster* mon)
             && proxPlayer
             && mons_intel(*mon) >= I_HUMAN)
         {
-            mon->foe = MHITYOU;
+            mon->foe = _nearest_player_foe(mon->pos());
         }
         else
             set_nearest_monster_foe(mon);
@@ -414,7 +455,7 @@ void handle_behaviour(monster* mon)
 
     // Friendly and good neutral monsters do not attack other friendly
     // and good neutral monsters.
-    if (!mons_is_avatar(mon->type) && mon->foe != MHITNOT && mon->foe != MHITYOU
+    if (!mons_is_avatar(mon->type) && mon->foe != MHITNOT && !is_player_foe(mon->foe)
         && wontAttack && env.mons[mon->foe].wont_attack())
     {
         mon->foe = MHITNOT;
@@ -424,7 +465,7 @@ void handle_behaviour(monster* mon)
     if (isNeutral
         && !mon->has_ench(ENCH_FRENZIED)
         && mon->foe != MHITNOT
-        && (mon->foe == MHITYOU || env.mons[mon->foe].neutral()))
+        && (is_player_foe(mon->foe) || env.mons[mon->foe].neutral()))
     {
         mon->foe = MHITNOT;
     }
@@ -433,12 +474,12 @@ void handle_behaviour(monster* mon)
     // target the player (unless it is a leashing monster returning to its owner).
     if (!isFriendly && !isNeutral && !should_return
         && !mons_is_avatar(mon->type)
-        && mon->foe != MHITYOU && mon->foe != MHITNOT
+        && !is_player_foe(mon->foe) && mon->foe != MHITNOT
         && proxPlayer && !mon->berserk_or_frenzied()
         && !mon->has_ench(ENCH_DAZED)
         && !one_chance_in(3))
     {
-        mon->foe = MHITYOU;
+        mon->foe = _nearest_player_foe(mon->pos());
     }
 
     // Validate current target again.
@@ -477,13 +518,14 @@ void handle_behaviour(monster* mon)
         const actor* afoe = mon->get_foe();
         proxFoe = afoe && mon->can_see(*afoe);
 
-        if (mon->foe == MHITYOU)
+        if (is_player_foe(mon->foe))
         {
             // monster::get_foe returns nullptr for friendly monsters with
-            // foe == MHITYOU, so make afoe point to the player here.
+            // a player foe, so make afoe point to the targeted player here.
             // -cao
-            afoe = &you;
-            proxFoe = proxPlayer;   // Take invis into account.
+            const int pidx = player_foe_index(mon->foe);
+            afoe = &players[pidx];
+            proxFoe = afoe && mon->can_see(*afoe);
         }
 
         coord_def foepos = coord_def(0,0);
@@ -525,8 +567,9 @@ void handle_behaviour(monster* mon)
                 }
                 else if (!mon->has_ench(ENCH_DAZED))
                 {
-                    new_foe = MHITYOU;
-                    mon->target = you.pos();
+                    new_foe = _nearest_player_foe(mon->pos());
+                    const int pidx = player_foe_index(new_foe);
+                    mon->target = players[pidx].pos();
                 }
                 break;
             }
@@ -541,7 +584,7 @@ void handle_behaviour(monster* mon)
             // Foe gone out of LOS?
             if (!proxFoe
                 && !(mon->friendly()
-                     && mon->foe == MHITYOU
+                     && is_player_foe(mon->foe)
                      && mon->is_travelling()
                      && mon->travel_target == MTRAV_FOE))
             {
@@ -586,7 +629,7 @@ void handle_behaviour(monster* mon)
                     mon->target = owner ? owner->pos() : mon->pos();
                     break;
                 }
-                else if (isFriendly && mon->foe != MHITYOU)
+                else if (isFriendly && !is_player_foe(mon->foe))
                 {
                     if (patrolling || crawl_state.game_is_arena())
                     {
@@ -605,7 +648,8 @@ void handle_behaviour(monster* mon)
                     }
                     else
                     {
-                        new_foe = MHITYOU;
+                        // Friendly monster returns toward nearest player.
+                        new_foe = _nearest_player_foe(mon->pos());
                         mon->target = foepos;
                     }
                     break;
@@ -622,14 +666,16 @@ void handle_behaviour(monster* mon)
                     // intuition only go so far).
                     if (mon->pos() == mon->target)
                     {
-                        if (mon->foe == MHITYOU)
+                        if (is_player_foe(mon->foe))
                         {
-                            if (in_bounds(you.pos())
-                                && (x_chance_in_y(50, you.stealth())
-                                    || you.penance[GOD_ASHENZARI]
+                            const int pidx = player_foe_index(mon->foe);
+                            const player& foe_pl = players[pidx];
+                            if (in_bounds(foe_pl.pos())
+                                && (x_chance_in_y(50, foe_pl.stealth())
+                                    || foe_pl.penance[GOD_ASHENZARI]
                                        && coinflip()))
                             {
-                                mon->target = you.pos();
+                                mon->target = foe_pl.pos();
                             }
                             else
                                 mon->foe_memory = 0;
@@ -645,7 +691,7 @@ void handle_behaviour(monster* mon)
                 }
 
                 if (mon->foe_memory <= 0
-                    && !(mon->friendly() && mon->foe == MHITYOU))
+                    && !(mon->friendly() && is_player_foe(mon->foe)))
                 {
                     new_beh = BEH_WANDER;
                 }
@@ -760,7 +806,7 @@ void handle_behaviour(monster* mon)
                     && !isPacified
                     || mon->has_ench(ENCH_FRENZIED)))
             {
-                new_foe = MHITYOU;
+                new_foe = _nearest_player_foe(mon->pos());
                 new_beh = BEH_SEEK;
                 break;
             }
@@ -814,9 +860,9 @@ void handle_behaviour(monster* mon)
 
             if (isFriendly)
             {
-                // Special-cased below so that it will flee *towards* you.
-                if (mon->foe == MHITYOU)
-                    mon->target = you.pos();
+                // Special-cased below so that it will flee *towards* its foe.
+                if (is_player_foe(mon->foe))
+                    mon->target = players[player_foe_index(mon->foe)].pos();
             }
             else if (proxFoe)
             {
@@ -843,7 +889,7 @@ void handle_behaviour(monster* mon)
                     && !patrolling
                     && !crawl_state.game_is_arena())
                 {
-                    new_foe = MHITYOU;
+                    new_foe = _nearest_player_foe(mon->pos());
                 }
                 else
                     new_beh = BEH_WANDER;
@@ -895,7 +941,7 @@ void handle_behaviour(monster* mon)
                 // XXX: The above function already sets this, but otherwise they
                 //      will be ignored just below. Ugh.
                 new_beh = BEH_SEEK;
-                new_foe = MHITYOU;
+                new_foe = _nearest_player_foe(mon->pos());
             }
             else
                 mon->props[LAST_POS_KEY] = mon->pos();
@@ -936,7 +982,8 @@ static bool _mons_check_foe(monster* mon, const coord_def& p,
            && (friendly || !is_sanctuary(p))
            && !foe->is_firewood()
            && !foe->props.exists(KIKU_WRETCH_KEY)
-           || p == you.pos() && mon->has_ench(ENCH_FRENZIED);
+           || actor_at(p) && actor_at(p)->is_player()
+              && mon->has_ench(ENCH_FRENZIED);
 }
 
 // Set a monster's foe to the nearest valid hostile monster (ties chosen randomly)
@@ -968,9 +1015,18 @@ void set_nearest_monster_foe(monster* mon, bool also_use_player_vision)
 
             if (_mons_check_foe(mon, *di, friendly, neutral))
             {
-                if (*di == you.pos())
-                    mon->foe = MHITYOU;
-                else
+                // Check if any player is at this position.
+                bool found_player = false;
+                for (int i = 0; i < num_players; i++)
+                {
+                    if (mp_state.player_alive[i] && *di == players[i].pos())
+                    {
+                        mon->foe = player_to_foe(i);
+                        found_player = true;
+                        break;
+                    }
+                }
+                if (!found_player)
                     mon->foe = env.mgrid(*di);
                 return;
             }
@@ -1071,7 +1127,7 @@ void behaviour_event(monster* mon, mon_event_type event, const actor *src,
         // should not respond to this event.
         if (src != &you
             && (mon->behaviour == BEH_WITHDRAW
-                || mon->friendly() && you.pet_target == MHITYOU))
+                || mon->friendly() && is_player_foe(you.pet_target)))
         {
             break;
         }
@@ -1293,7 +1349,7 @@ void behaviour_event(monster* mon, mon_event_type event, const actor *src,
         if (src == &you)
                 setTarget = true;
         else if (mon->friendly() && !crawl_state.game_is_arena())
-            mon->foe = MHITYOU;
+            mon->foe = _nearest_player_foe(mon->pos());
 
         break;
 
@@ -1313,7 +1369,7 @@ void behaviour_event(monster* mon, mon_event_type event, const actor *src,
         {
             if (mon->friendly() && !crawl_state.game_is_arena())
             {
-                mon->foe = MHITYOU;
+                mon->foe = _nearest_player_foe(mon->pos());
                 msg = "PLAIN:@The_monster@ returns to your side!";
             }
             else if (!mon->is_child_tentacle())
@@ -1379,7 +1435,7 @@ void behaviour_event(monster* mon, mon_event_type event, const actor *src,
     dprf("%s could shout in behavioural event, allow_shout: %d, foe: %d", mon->name(DESC_A, true).c_str(), allow_shout, mon->foe);
 #endif
     if (was_unaware && allow_shout
-        && mon->foe == MHITYOU && !mon->wont_attack())
+        && is_player_foe(mon->foe) && !mon->wont_attack())
     {
         if (!vampire_mesmerism_check(*mon))
             monster_consider_shouting(*mon);
@@ -1403,7 +1459,7 @@ void behaviour_event(monster* mon, mon_event_type event, const actor *src,
         mons_speaks_msg(mon, getSpeakString("orc_priest_preaching"), MSGCH_TALK);
 
     ASSERT(!crawl_state.game_is_arena()
-           || mon->foe != MHITYOU && (mon->target.origin() || mon->target != you.pos()));
+           || !is_player_foe(mon->foe) && (mon->target.origin() || mon->target != you.pos()));
 }
 
 void make_mons_stop_fleeing(monster* mon)
@@ -1563,7 +1619,7 @@ void mons_end_withdraw_order(monster& mons)
         return;
 
     mons.behaviour = BEH_SEEK;
-    mons.foe = MHITYOU;
+    mons.foe = _nearest_player_foe(mons.pos());
     mons.patrol_point.reset();
     mons.props.erase(LAST_POS_KEY);
     mons.props.erase(BLOCKED_DEADLINE_KEY);

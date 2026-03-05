@@ -1269,6 +1269,11 @@ void push_layout(shared_ptr<Widget> root, KeymapContext km = KMC_DEFAULT);
 void pop_layout();
 shared_ptr<Widget> top_layout();
 void pump_events(int wait_event_timeout = INT_MAX);
+
+// Optional callback invoked each iteration of pump_events().
+// Used by multiplayer to poll for connections while the UI blocks for input.
+typedef void (*pump_callback_t)();
+extern pump_callback_t pump_callback;
 void run_layout(shared_ptr<Widget> root, const bool& done,
         shared_ptr<Widget> initial_focus = nullptr);
 bool has_layout();

@@ -101,7 +101,8 @@ endif
 MAKEFLAGS += -rR # This only works for recursive makes, i.e. contribs ...
 .SUFFIXES:       # ... so zap the suffix list to neutralize most predefined rules, too
 
-.PHONY: all test install clean clean-contrib clean-rltiles clean-android \
+.PHONY: all console tiles both \
+        test install clean clean-contrib clean-rltiles clean-android \
         clean-appimage clean-catch2 clean-plug-and-play-tests \
         clean-coverage clean-coverage-full \
         appimage distclean debug debug-lite profile package-source source \
@@ -330,6 +331,21 @@ endif
 
 # Should be the first rule, but must come after $(GAME) is set.
 all: greet check-fonts $(GAME) docs webserver
+
+# Multiplayer convenience targets: build console and/or tiles clients
+# with distinct binary names.
+console:
+	+$(MAKE) TILES= GAME=ccrawl
+
+tiles:
+	+$(MAKE) TILES=y GAME=tcrawl
+
+# Build both console and tiles clients. Objects must be rebuilt between
+# the two because they use different preprocessor defines.
+both:
+	+$(MAKE) TILES= GAME=ccrawl
+	$(RM) $(ALL_OBJECTS) $(ALL_OBJECTS:.o=.d) main.o main.d .cflags
+	+$(MAKE) TILES=y GAME=tcrawl
 
 # XX these are set wrong on mac cross-compiling
 LIBPCRE := contrib/install/$(ARCH)/lib/libpcre.a
@@ -1653,7 +1669,8 @@ endif
 clean: clean-rltiles clean-webserver clean-android clean-monster clean-catch2 \
        clean-plug-and-play-tests clean-coverage-full clean-mac clean-appimage
 	+$(MAKE) -C $(UTIL) clean
-	$(RM) $(GAME) $(GAME).exe $(GENERATED_FILES) $(EXTRA_OBJECTS) libw32c.o\
+	$(RM) $(GAME) $(GAME).exe ccrawl tcrawl \
+	    $(GENERATED_FILES) $(EXTRA_OBJECTS) libw32c.o\
 	    libunix.o $(ALL_OBJECTS) $(ALL_OBJECTS:.o=.d) *.ixx  \
 	    .contrib-libs .cflags AppHdr.h.gch AppHdr.h.d util/fake_pty \
             rltiles/tiledef-unrand.cc
