@@ -961,6 +961,7 @@ static void _mp_host_input()
         ui::pump_callback = _mp_poll_connections;
 
         // Use normal _input() — UI works fully (help, inventory, etc.)
+        // Game actions are blocked inside _input() by _cmd_is_game_action().
         _input();
 
         // If the game started during _input() (callback triggered),
@@ -972,22 +973,9 @@ static void _mp_host_input()
             return;
         }
 
-        // If host tried to take a game action, cancel it.
-        if (you.turn_is_over)
-        {
-            you.turn_is_over = false;
-            int missing = 0;
-            for (int i = 1; i < num_players; i++)
-                if (!mp_state.player_connected[i])
-                    missing++;
-            if (missing > 0)
-                mprf(MSGCH_PLAIN,
-                     "Can't act yet: waiting for %d player(s)...",
-                     missing);
-            else
-                mprf(MSGCH_PLAIN,
-                     "Can't act yet: waiting for player info...");
-        }
+        // Safety: cancel any turn_is_over from autopickup or other
+        // side effects that bypass the command check.
+        you.turn_is_over = false;
 #else
         // Console: _input() blocks with no event pump, so only call it
         // when there's pending input to avoid blocking connection polling.
@@ -1913,6 +1901,49 @@ static int _stun_delay()
 
 //
 //  This function handles the player's input. It's called from main(),
+// Returns true if a command is a game action (moves, attacks, item use, etc.)
+// as opposed to a UI-only command (inventory browse, help, skills, etc.).
+static bool _cmd_is_game_action(command_type cmd)
+{
+    switch (cmd)
+    {
+    case CMD_MOVE_LEFT: case CMD_MOVE_RIGHT:
+    case CMD_MOVE_UP: case CMD_MOVE_DOWN:
+    case CMD_MOVE_UP_LEFT: case CMD_MOVE_UP_RIGHT:
+    case CMD_MOVE_DOWN_LEFT: case CMD_MOVE_DOWN_RIGHT:
+    case CMD_RUN_LEFT: case CMD_RUN_RIGHT:
+    case CMD_RUN_UP: case CMD_RUN_DOWN:
+    case CMD_RUN_UP_LEFT: case CMD_RUN_UP_RIGHT:
+    case CMD_RUN_DOWN_LEFT: case CMD_RUN_DOWN_RIGHT:
+    case CMD_SAFE_MOVE_LEFT: case CMD_SAFE_MOVE_RIGHT:
+    case CMD_SAFE_MOVE_UP: case CMD_SAFE_MOVE_DOWN:
+    case CMD_SAFE_MOVE_UP_LEFT: case CMD_SAFE_MOVE_UP_RIGHT:
+    case CMD_SAFE_MOVE_DOWN_LEFT: case CMD_SAFE_MOVE_DOWN_RIGHT:
+    case CMD_ATTACK_LEFT: case CMD_ATTACK_RIGHT:
+    case CMD_ATTACK_UP: case CMD_ATTACK_DOWN:
+    case CMD_ATTACK_UP_LEFT: case CMD_ATTACK_UP_RIGHT:
+    case CMD_ATTACK_DOWN_LEFT: case CMD_ATTACK_DOWN_RIGHT:
+    case CMD_GO_UPSTAIRS: case CMD_GO_DOWNSTAIRS:
+    case CMD_REST: case CMD_WAIT:
+    case CMD_PICKUP: case CMD_DROP:
+    case CMD_DROP_LAST:
+    case CMD_CAST_SPELL: case CMD_USE_ABILITY:
+    case CMD_FIRE: case CMD_FIRE_ITEM_NO_QUIVER:
+    case CMD_WEAR_ARMOUR: case CMD_REMOVE_ARMOUR:
+    case CMD_WIELD_WEAPON: case CMD_WEAR_JEWELLERY:
+    case CMD_REMOVE_JEWELLERY:
+    case CMD_QUAFF: case CMD_READ:
+    case CMD_ZAP_WAND: case CMD_EVOKE:
+    case CMD_CLOSE_DOOR: case CMD_OPEN_DOOR:
+    case CMD_AUTOFIRE:
+    case CMD_EXPLORE:
+    case CMD_INTERLEVEL_TRAVEL:
+        return true;
+    default:
+        return false;
+    }
+}
+
 //  from inside an endless loop.
 //
 static void _input()
@@ -2129,7 +2160,26 @@ static void _input()
         // binding, your turn may be ended by the first invoke of the
         // macro.
         if (!you.turn_is_over && cmd != CMD_NEXT_CMD)
-            ::process_command(cmd, real_prev_cmd);
+        {
+            // In MP pre-game, block commands that would take a turn.
+            if (mp_state.enabled && !mp_state.game_started
+                && _cmd_is_game_action(cmd))
+            {
+                int missing = 0;
+                for (int i = 1; i < num_players; i++)
+                    if (!mp_state.player_connected[i])
+                        missing++;
+                if (missing > 0)
+                    mprf(MSGCH_PLAIN,
+                         "Can't act yet: waiting for %d player(s)...",
+                         missing);
+                else
+                    mprf(MSGCH_PLAIN,
+                         "Can't act yet: waiting for player info...");
+            }
+            else
+                ::process_command(cmd, real_prev_cmd);
+        }
 
         repeat_again_rec.paused = true;
 
