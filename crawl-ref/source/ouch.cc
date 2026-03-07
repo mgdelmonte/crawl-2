@@ -1493,7 +1493,8 @@ void player_die(kill_method_type death_type, mid_t source, int dam,
                 const char *aux, const char *death_source_name)
 {
     // In multiplayer, dying doesn't end the game unless all players are dead.
-    if (mp_state.enabled)
+    // Quitting always ends the game immediately.
+    if (mp_state.enabled && death_type != KILLED_BY_QUITTING)
     {
         const int pidx = active_player_idx;
         mp_state.player_alive[pidx] = false;

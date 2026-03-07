@@ -623,7 +623,20 @@ int TilesFramework::getch_ck()
 
         unsigned int ticks = 0;
 
-        if (wm->wait_event(&event, INT_MAX))
+        // When a pump callback is active (e.g. MP connection polling),
+        // cap the timeout so the callback runs frequently.
+        int wait_timeout = INT_MAX;
+        if (ui::pump_callback && wait_timeout > 50)
+            wait_timeout = 50;
+
+        if (!wm->wait_event(&event, wait_timeout))
+        {
+            if (ui::pump_callback)
+                ui::pump_callback();
+            continue;
+        }
+
+        if (true)
         {
             ticks = wm->get_ticks();
             if (!mouse_target_mode && event.type != WME_CUSTOMEVENT)

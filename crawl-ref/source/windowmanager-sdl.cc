@@ -1136,6 +1136,15 @@ bool SDLWrapper::next_event_is(wm_event_type type)
     return count != 0;
 }
 
+void SDLWrapper::push_key(int key)
+{
+    SDL_Event event;
+    memset(&event, 0, sizeof(event));
+    event.type = SDL_KEYDOWN;
+    event.key.keysym.sym = key;
+    SDL_PushEvent(&event);
+}
+
 bool SDLWrapper::load_texture(GenericTexture *tex, const char *filename,
                               MipMapOptions mip_opt, unsigned int &orig_width,
                               unsigned int &orig_height, tex_proc_func proc,

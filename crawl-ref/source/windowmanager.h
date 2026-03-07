@@ -167,6 +167,7 @@ public:
     // Event functions
     virtual int wait_event(wm_event *event, int timeout) = 0;
     virtual bool next_event_is(wm_event_type type) = 0;
+    virtual void push_key(int key) = 0;
 
     // Display functions
     virtual bool init_hidpi() = 0;

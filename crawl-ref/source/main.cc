@@ -657,6 +657,14 @@ static void _client_game()
     console_startup();
     crawl_state.io_inited = true;
 
+    // Mark game as started so messages display in the message window
+    // and viewwindow() renders properly.
+    crawl_state.game_started = true;
+
+    // Set a temporary non-origin position so viewwindow() doesn't bail.
+    // This will be overwritten when we receive game_state from the host.
+    you.set_position(coord_def(GXM / 2, GYM / 2));
+
     // Parse host:port from mp_connect_host.
     string host_str = crawl_state.mp_connect_host;
     int port = crawl_state.mp_port;
@@ -886,6 +894,15 @@ static void _mp_start_game()
 
     viewwindow();
     update_screen();
+
+#ifdef USE_TILE_LOCAL
+    // Push a synthetic key event to break _input() out of its getch()
+    // wait loop, so _mp_host_input() can transition to the in-game phase.
+    // Use 27 (SDLK_ESCAPE / ASCII ESC), which _translate_keysym maps to
+    // CK_ESCAPE -> CMD_TARGET_CANCEL, a no-op outside targeting mode.
+    if (wm)
+        wm->push_key(27);
+#endif
 }
 
 // Poll for new connections and player_info messages.
@@ -968,8 +985,6 @@ static void _mp_host_input()
         // _input() blocks waiting for user input in the SDL event loop.
         ui::pump_callback = _mp_poll_connections;
 
-        // Use normal _input() — UI works fully (help, inventory, etc.)
-        // Game actions are blocked inside _input() by _cmd_is_game_action().
         _input();
 
         // If the game started during _input() (callback triggered),
@@ -981,8 +996,7 @@ static void _mp_host_input()
             return;
         }
 
-        // Safety: cancel any turn_is_over from autopickup or other
-        // side effects that bypass the command check.
+        ui::pump_callback = nullptr;
         you.turn_is_over = false;
 #else
         // Console: _input() blocks with no event pump, so only call it
@@ -995,17 +1009,13 @@ static void _mp_host_input()
         }
         else
     #ifdef TARGET_OS_WINDOWS
-        _sleep(10); // 10ms
-#else
-        usleep(10000); // 10ms
-#endif — avoid spinning
+            _sleep(10); // 10ms
+    #else
+            usleep(10000); // 10ms
+    #endif
 #endif
         return;
     }
-
-    // Clear pump callback once game is running.
-    if (ui::pump_callback)
-        ui::pump_callback = nullptr;
 
     // --- In-game phase: process commands and advance turns ---
 
@@ -1942,43 +1952,79 @@ static int _stun_delay()
 
 //
 //  This function handles the player's input. It's called from main(),
-// Returns true if a command is a game action (moves, attacks, item use, etc.)
-// as opposed to a UI-only command (inventory browse, help, skills, etc.).
-static bool _cmd_is_game_action(command_type cmd)
+// Returns true if a command is safe to run during the MP pre-game phase
+// (before all players have connected). Only pure UI/info commands are allowed;
+// anything that could advance game time is blocked.
+static bool _cmd_is_safe_pregame(command_type cmd)
 {
     switch (cmd)
     {
-    case CMD_MOVE_LEFT: case CMD_MOVE_RIGHT:
-    case CMD_MOVE_UP: case CMD_MOVE_DOWN:
-    case CMD_MOVE_UP_LEFT: case CMD_MOVE_UP_RIGHT:
-    case CMD_MOVE_DOWN_LEFT: case CMD_MOVE_DOWN_RIGHT:
-    case CMD_RUN_LEFT: case CMD_RUN_RIGHT:
-    case CMD_RUN_UP: case CMD_RUN_DOWN:
-    case CMD_RUN_UP_LEFT: case CMD_RUN_UP_RIGHT:
-    case CMD_RUN_DOWN_LEFT: case CMD_RUN_DOWN_RIGHT:
-    case CMD_SAFE_MOVE_LEFT: case CMD_SAFE_MOVE_RIGHT:
-    case CMD_SAFE_MOVE_UP: case CMD_SAFE_MOVE_DOWN:
-    case CMD_SAFE_MOVE_UP_LEFT: case CMD_SAFE_MOVE_UP_RIGHT:
-    case CMD_SAFE_MOVE_DOWN_LEFT: case CMD_SAFE_MOVE_DOWN_RIGHT:
-    case CMD_ATTACK_LEFT: case CMD_ATTACK_RIGHT:
-    case CMD_ATTACK_UP: case CMD_ATTACK_DOWN:
-    case CMD_ATTACK_UP_LEFT: case CMD_ATTACK_UP_RIGHT:
-    case CMD_ATTACK_DOWN_LEFT: case CMD_ATTACK_DOWN_RIGHT:
-    case CMD_GO_UPSTAIRS: case CMD_GO_DOWNSTAIRS:
-    case CMD_REST: case CMD_WAIT:
-    case CMD_PICKUP: case CMD_DROP:
-    case CMD_DROP_LAST:
-    case CMD_CAST_SPELL: case CMD_USE_ABILITY:
-    case CMD_FIRE: case CMD_FIRE_ITEM_NO_QUIVER:
-    case CMD_WEAR_ARMOUR: case CMD_REMOVE_ARMOUR:
-    case CMD_WIELD_WEAPON: case CMD_WEAR_JEWELLERY:
-    case CMD_REMOVE_JEWELLERY:
-    case CMD_QUAFF: case CMD_READ:
-    case CMD_ZAP_WAND: case CMD_EVOKE:
-    case CMD_CLOSE_DOOR: case CMD_OPEN_DOOR:
-    case CMD_AUTOFIRE:
-    case CMD_EXPLORE:
-    case CMD_INTERLEVEL_TRAVEL:
+    // Informational / UI commands.
+    case CMD_DISPLAY_INVENTORY:
+    case CMD_DISPLAY_CHARACTER_STATUS:
+    case CMD_DISPLAY_COMMANDS:
+    case CMD_DISPLAY_KNOWN_OBJECTS:
+    case CMD_DISPLAY_MUTATIONS:
+    case CMD_DISPLAY_RUNES:
+    case CMD_DISPLAY_SKILLS:
+    case CMD_DISPLAY_SPELLS:
+    case CMD_DISPLAY_RELIGION:
+    case CMD_DISPLAY_MAP:
+    case CMD_DISPLAY_OVERMAP:
+    case CMD_EXPERIENCE_CHECK:
+    case CMD_RESISTS_SCREEN:
+    case CMD_FULL_VIEW:
+    case CMD_LOOKUP_HELP:
+    case CMD_LIST_ARMOUR:
+    case CMD_LIST_JEWELLERY:
+    case CMD_LIST_GOLD:
+    case CMD_REPLAY_MESSAGES:
+    case CMD_INSCRIBE_ITEM:
+    case CMD_MAKE_NOTE:
+    case CMD_READ_MESSAGES:
+    case CMD_SHOW_CHARACTER_DUMP:
+    case CMD_CHARACTER_DUMP:
+    case CMD_LOOK_AROUND:
+    case CMD_CLEAR_MAP:
+    case CMD_SEARCH_STASHES:
+    case CMD_ANNOTATE_LEVEL:
+    case CMD_FIX_WAYPOINT:
+    // Quiver browsing (no action taken).
+    case CMD_QUIVER_ITEM:
+    case CMD_CYCLE_QUIVER_FORWARD:
+    case CMD_CYCLE_QUIVER_BACKWARD:
+    case CMD_SWAP_QUIVER_RECENT:
+    // Macro / toggle commands.
+    case CMD_MACRO_ADD:
+    case CMD_MACRO_MENU:
+    case CMD_TOGGLE_AUTOPICKUP:
+    case CMD_DISABLE_MORE:
+    case CMD_ENABLE_MORE:
+    case CMD_SHOW_TERRAIN:
+    case CMD_ADJUST_INVENTORY:
+    // Screen / system commands.
+    case CMD_REDRAW_SCREEN:
+    case CMD_SAVE_GAME:
+    case CMD_SAVE_GAME_NOW:
+    case CMD_QUIT:
+    case CMD_NO_CMD:
+    case CMD_NO_CMD_DEFAULT:
+    case CMD_MOUSE_MOVE:
+#ifdef USE_TILE
+    case CMD_EDIT_PLAYER_TILE:
+    case CMD_ZOOM_IN:
+    case CMD_ZOOM_OUT:
+#endif
+#ifdef USE_SOUND
+    case CMD_TOGGLE_SOUND:
+#endif
+#ifdef USE_UNIX_SIGNALS
+    case CMD_SUSPEND_GAME:
+#endif
+#ifdef WIZARD
+    case CMD_WIZARD:
+    case CMD_EXPLORE_MODE:
+#endif
         return true;
     default:
         return false;
@@ -2202,9 +2248,9 @@ static void _input()
         // macro.
         if (!you.turn_is_over && cmd != CMD_NEXT_CMD)
         {
-            // In MP pre-game, block commands that would take a turn.
+            // In MP pre-game, block commands that could advance game time.
             if (mp_state.enabled && !mp_state.game_started
-                && _cmd_is_game_action(cmd))
+                && !_cmd_is_safe_pregame(cmd))
             {
                 int missing = 0;
                 for (int i = 1; i < num_players; i++)
