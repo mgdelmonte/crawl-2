@@ -3,19 +3,43 @@
  * @brief Multiplayer TCP server (host side).
 **/
 
+// Winsock2 must be included before AppHdr.h to prevent windows.h macro
+// conflicts (PURE, NEAR, etc.) — AppHdr.h will redefine them correctly.
+#ifdef _WIN32
+# define WIN32_LEAN_AND_MEAN
+# define NOMINMAX
+# ifndef _WIN32_WINNT
+#  define _WIN32_WINNT 0x0600
+# endif
+# include <winsock2.h>
+# include <ws2tcpip.h>
+#endif
+
 #include "AppHdr.h"
 
 #include "mp-server.h"
 
 #include <cerrno>
 #include <cstring>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <poll.h>
+#ifdef TARGET_OS_WINDOWS
+# define poll WSAPoll
+# define close closesocket
+# define SHUT_RDWR SD_BOTH
+  static inline int mp_socket_errno() { return WSAGetLastError(); }
+  static inline bool mp_would_block()
+  { int e = WSAGetLastError(); return e == WSAEWOULDBLOCK || e == WSAEINTR; }
+#else
+  static inline int mp_socket_errno() { return errno; }
+  static inline bool mp_would_block()
+  { return errno == EAGAIN || errno == EWOULDBLOCK; }
+# include <sys/socket.h>
+# include <sys/types.h>
+# include <netinet/in.h>
+# include <arpa/inet.h>
+# include <unistd.h>
+# include <fcntl.h>
+# include <poll.h>
+#endif
 
 #include "json.h"
 #include "json-wrapper.h"
@@ -30,8 +54,13 @@ MPServer mp_server;
 
 static void set_nonblocking(int fd)
 {
+#ifdef TARGET_OS_WINDOWS
+    u_long mode = 1;
+    ioctlsocket(fd, FIONBIO, &mode);
+#else
     int flags = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+#endif
 }
 
 MPServer::MPServer()
@@ -47,6 +76,11 @@ bool MPServer::start(int port, int expected_players)
 {
     m_expected_players = expected_players;
 
+#ifdef TARGET_OS_WINDOWS
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
+
     m_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (m_listen_fd < 0)
     {
@@ -58,7 +92,8 @@ bool MPServer::start(int port, int expected_players)
 
     // Allow address reuse.
     int opt = 1;
-    setsockopt(m_listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(m_listen_fd, SOL_SOCKET, SO_REUSEADDR,
+               reinterpret_cast<const char*>(&opt), sizeof(opt));
 
     sockaddr_in addr = {};
     addr.sin_family = AF_INET;
@@ -134,9 +169,9 @@ bool MPServer::try_accept_connection(bool& error_out, int poll_timeout_ms)
     int ret = poll(&pfd, 1, poll_timeout_ms);
     if (ret < 0)
     {
-        if (errno == EINTR)
+        if (mp_would_block())
             return false;
-        mprf(MSGCH_ERROR, "MP server: poll error: %s", strerror(errno));
+        mprf(MSGCH_ERROR, "MP server: poll error (%d)", mp_socket_errno());
         error_out = true;
         return false;
     }
@@ -150,9 +185,9 @@ bool MPServer::try_accept_connection(bool& error_out, int poll_timeout_ms)
                            (sockaddr*)&client_addr, &client_len);
     if (client_fd < 0)
     {
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
+        if (mp_would_block())
             return false;
-        mprf(MSGCH_ERROR, "MP server: accept error: %s", strerror(errno));
+        mprf(MSGCH_ERROR, "MP server: accept error (%d)", mp_socket_errno());
         return false;
     }
 
@@ -213,7 +248,11 @@ bool MPServer::wait_for_connections()
         try_accept_connection(error);
         if (error)
             return false;
+#ifdef TARGET_OS_WINDOWS
+        _sleep(50); // 50ms
+#else
         usleep(50000); // 50ms
+#endif
     }
 
     mprf(MSGCH_PLAIN, "MP server: all %d players connected!",
@@ -400,7 +439,7 @@ vector<string> MPServer::read_messages(mp_client_conn& client)
     ssize_t n = recv(client.socket_fd, buf, sizeof(buf), 0);
     if (n <= 0)
     {
-        if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
+        if (n == 0 || !mp_would_block())
         {
             // Connection closed or error.
             client.connected = false;

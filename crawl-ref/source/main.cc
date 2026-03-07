@@ -21,9 +21,13 @@
 #if defined(UNIX) || defined(TARGET_COMPILER_MINGW)
 # include <unistd.h>
 #endif
-#include <poll.h>
-#include <spawn.h>
+#ifdef TARGET_OS_WINDOWS
+# include <process.h>
+#else
+# include <poll.h>
+# include <spawn.h>
 extern char **environ;
+#endif
 
 #ifndef TARGET_OS_WINDOWS
 # include <langinfo.h>
@@ -625,7 +629,11 @@ static void _client_input_loop()
 #ifdef USE_TILE_LOCAL
         ui::pump_events(0);
 #endif
+#ifdef TARGET_OS_WINDOWS
+        _sleep(10); // 10ms
+#else
         usleep(10000); // 10ms
+#endif
     }
 }
 
@@ -986,7 +994,11 @@ static void _mp_host_input()
                 you.turn_is_over = false;
         }
         else
-            usleep(10000); // 10ms — avoid spinning
+    #ifdef TARGET_OS_WINDOWS
+        _sleep(10); // 10ms
+#else
+        usleep(10000); // 10ms
+#endif — avoid spinning
 #endif
         return;
     }
@@ -1112,7 +1124,11 @@ static void _mp_host_input()
 
     // Avoid 100% CPU spin while waiting for input.
     if (!processed_any && !mp_state.all_acted())
+#ifdef TARGET_OS_WINDOWS
+        _sleep(10); // 10ms
+#else
         usleep(10000); // 10ms
+#endif
 }
 
 static void _launch_game_loop()
@@ -1264,9 +1280,15 @@ NORETURN static void _launch_game()
             string exe_path = crawl_state.command_line_arguments.empty()
                               ? "./crawl"
                               : crawl_state.command_line_arguments[0];
+#ifndef TARGET_OS_WINDOWS
             char abs_buf[4096];
             if (realpath(exe_path.c_str(), abs_buf))
                 exe_path = abs_buf;
+#else
+            char abs_buf[_MAX_PATH];
+            if (_fullpath(abs_buf, exe_path.c_str(), _MAX_PATH))
+                exe_path = abs_buf;
+#endif
 
             string connect_arg = make_stringf("localhost:%d",
                                               crawl_state.mp_port);
@@ -1276,6 +1298,7 @@ NORETURN static void _launch_game()
                 string char_spec = make_stringf("Player%d:HuFi",
                                                 i + 2);
 
+#ifndef TARGET_OS_WINDOWS
                 const char *spawn_argv[] = {
                     exe_path.c_str(),
                     "--connect", connect_arg.c_str(),
@@ -1299,6 +1322,24 @@ NORETURN static void _launch_game()
                          "Failed to spawn client process: %s",
                          strerror(spawn_err));
                 }
+#else
+                intptr_t pid = _spawnl(_P_NOWAIT, exe_path.c_str(),
+                    exe_path.c_str(),
+                    "--connect", connect_arg.c_str(),
+                    "--char", char_spec.c_str(),
+                    nullptr);
+                if (pid != -1)
+                {
+                    mprf(MSGCH_PLAIN, "Spawned client %d (pid %td).",
+                         i + 1, pid);
+                }
+                else
+                {
+                    mprf(MSGCH_ERROR,
+                         "Failed to spawn client process: %s",
+                         strerror(errno));
+                }
+#endif
             }
         }
 

@@ -3,20 +3,41 @@
  * @brief Multiplayer TCP client.
 **/
 
+// Winsock2 must be included before AppHdr.h to prevent windows.h macro
+// conflicts (PURE, NEAR, etc.) — AppHdr.h will redefine them correctly.
+#ifdef _WIN32
+# define WIN32_LEAN_AND_MEAN
+# define NOMINMAX
+# ifndef _WIN32_WINNT
+#  define _WIN32_WINNT 0x0600
+# endif
+# include <winsock2.h>
+# include <ws2tcpip.h>
+#endif
+
 #include "AppHdr.h"
 
 #include "mp-client.h"
 
 #include <cerrno>
 #include <cstring>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <poll.h>
+#ifdef TARGET_OS_WINDOWS
+# define poll WSAPoll
+# define close closesocket
+  static inline bool mp_would_block()
+  { int e = WSAGetLastError(); return e == WSAEWOULDBLOCK || e == WSAEINTR; }
+#else
+# include <sys/socket.h>
+# include <sys/types.h>
+# include <netinet/in.h>
+# include <arpa/inet.h>
+# include <netdb.h>
+# include <unistd.h>
+# include <fcntl.h>
+# include <poll.h>
+  static inline bool mp_would_block()
+  { return errno == EAGAIN || errno == EWOULDBLOCK; }
+#endif
 
 #include "json.h"
 #include "json-wrapper.h"
@@ -38,6 +59,11 @@ MPClient::~MPClient()
 
 bool MPClient::connect_to(const string& host, int port)
 {
+#ifdef TARGET_OS_WINDOWS
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
+
     m_socket_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (m_socket_fd < 0)
     {
@@ -72,8 +98,13 @@ bool MPClient::connect_to(const string& host, int port)
     }
 
     // Set non-blocking after connection established.
+#ifdef TARGET_OS_WINDOWS
+    u_long mode = 1;
+    ioctlsocket(m_socket_fd, FIONBIO, &mode);
+#else
     int flags = fcntl(m_socket_fd, F_GETFL, 0);
     fcntl(m_socket_fd, F_SETFL, flags | O_NONBLOCK);
+#endif
 
     m_connected = true;
     mprf(MSGCH_PLAIN, "MP client: connected to %s:%d", host.c_str(), port);
@@ -104,9 +135,9 @@ void MPClient::send_command(const string& json_msg)
                          line.size() - sent, 0);
         if (n < 0)
         {
-            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+            if (mp_would_block())
                 continue;
-            mprf(MSGCH_ERROR, "MP client: send error: %s", strerror(errno));
+            mprf(MSGCH_ERROR, "MP client: send error");
             disconnect();
             return;
         }
@@ -132,9 +163,9 @@ vector<string> MPClient::poll_messages()
         disconnect();
         return {};
     }
-    else if (errno != EAGAIN && errno != EWOULDBLOCK)
+    else if (!mp_would_block())
     {
-        mprf(MSGCH_ERROR, "MP client: recv error: %s", strerror(errno));
+        mprf(MSGCH_ERROR, "MP client: recv error");
         disconnect();
         return {};
     }
