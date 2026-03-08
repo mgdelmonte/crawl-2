@@ -36,6 +36,11 @@
 static void _mpr(string text, msg_channel_type channel=MSGCH_PLAIN, int param=0,
                  bool nojoin=false, bool cap=true);
 
+// Multiplayer message capture state.
+static bool _mp_capturing = false;
+static bool _mp_mirroring = false; // mirror mode: capture AND display
+static vector<string> _mp_captured;
+
 void mpr(const string &text)
 {
     _mpr(text);
@@ -1512,6 +1517,22 @@ static void _mpr(string text, msg_channel_type channel, int param, bool nojoin,
 {
     static bool _doing_c_message_hook = false;
 
+    // Multiplayer: divert messages to capture buffer instead of the
+    // normal message log. This prevents remote player messages from
+    // appearing in the host's message window.
+    if (_mp_capturing)
+    {
+        // Strip colour tags for the plain text version sent to clients.
+        formatted_string fs = formatted_string::parse_string(text);
+        if (cap)
+            fs.capitalise();
+        _mp_captured.push_back(fs.tostring());
+        // In mirror mode, also display the message normally.
+        // In capture mode, divert only (don't display).
+        if (!_mp_mirroring)
+            return;
+    }
+
     rng::generator rng(rng::UI);
 
     if (_msg_dump_file != nullptr)
@@ -2188,6 +2209,40 @@ string get_last_messages(int mcount, bool full)
     if (!text.empty())
         text += "\n";
     return text;
+}
+
+void mp_start_message_capture()
+{
+    _mp_captured.clear();
+    _mp_capturing = true;
+    _mp_mirroring = false;
+}
+
+string mp_stop_message_capture()
+{
+    _mp_capturing = false;
+    _mp_mirroring = false;
+    string result;
+    for (const string& line : _mp_captured)
+    {
+        if (!result.empty())
+            result += "\n";
+        result += line;
+    }
+    _mp_captured.clear();
+    return result;
+}
+
+void mp_start_message_mirror()
+{
+    _mp_captured.clear();
+    _mp_capturing = true;
+    _mp_mirroring = true;
+}
+
+string mp_stop_message_mirror()
+{
+    return mp_stop_message_capture();
 }
 
 bool recent_error_messages()

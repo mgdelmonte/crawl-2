@@ -43,12 +43,23 @@
 
 #include "json.h"
 #include "json-wrapper.h"
+#include "areas.h"
+#include "branch.h"
+#include "description-level-type.h"
+#include "item-name.h"
+#include "jobs.h"
 #include "message.h"
+#include "quiver.h"
 #include "stringutil.h"
 #include "multiplayer.h"
 #include "player.h"
+#include "player-stats.h"
+#include "skills.h"
+#include "species.h"
 #include "state.h"
 #include "env.h"
+#include "items.h"
+#include "mon-info.h"
 
 MPServer mp_server;
 
@@ -368,12 +379,185 @@ void MPServer::broadcast_game_state()
                            json_mknumber(players[i].pos().y));
         json_append_member(pdata, "acted",
                            json_mkbool(mp_state.player_has_acted[i]));
+
+        // Stats for display: use computed values from the host player
+        // (player 0, where `you` is valid) or base values for others.
+        if (i == 0)
+        {
+            json_append_member(pdata, "ac",
+                               json_mknumber(you.armour_class_scaled(1)));
+            json_append_member(pdata, "ev",
+                               json_mknumber(you.evasion_scaled(1)));
+            json_append_member(pdata, "sh",
+                               json_mknumber(player_displayed_shield_class()));
+        }
+        else
+        {
+            // Remote players: use base AC/EV from their player struct.
+            json_append_member(pdata, "ac",
+                               json_mknumber(players[i].base_ac(1)));
+            json_append_member(pdata, "ev",
+                               json_mknumber(10)); // base EV
+            json_append_member(pdata, "sh",
+                               json_mknumber(0));
+        }
+        json_append_member(pdata, "str",
+                           json_mknumber(players[i].base_stats[STAT_STR]));
+        json_append_member(pdata, "intel",
+                           json_mknumber(players[i].base_stats[STAT_INT]));
+        json_append_member(pdata, "dex",
+                           json_mknumber(players[i].base_stats[STAT_DEX]));
+        json_append_member(pdata, "xl",
+                           json_mknumber(players[i].experience_level));
+        json_append_member(pdata, "species_name",
+                           json_mkstring(
+                               species::name(players[i].species).c_str()));
+
+        // Title: for host player, use proper computed title;
+        // for others, construct from job name.
+        if (i == 0)
+        {
+            string title = players[i].your_name + " the "
+                           + player_title(false);
+            json_append_member(pdata, "title",
+                               json_mkstring(title.c_str()));
+        }
+        else
+        {
+            string title = players[i].your_name + " the "
+                           + get_job_name(players[i].char_class);
+            json_append_member(pdata, "title",
+                               json_mkstring(title.c_str()));
+        }
+
+        // Weapon name.
+        if (i == 0)
+        {
+            const item_def *weapon = you.weapon();
+            string wpn_name;
+            if (weapon)
+                wpn_name = weapon->name(DESC_PLAIN, true);
+            else
+                wpn_name = you.unarmed_attack_name();
+            json_append_member(pdata, "weapon",
+                               json_mkstring(wpn_name.c_str()));
+        }
+        else
+        {
+            json_append_member(pdata, "weapon",
+                               json_mkstring(""));
+        }
+
+        // Quiver description (host player only).
+        if (i == 0)
+        {
+            string qv = quiver::get_secondary_action()
+                             ->quiver_description().tostring();
+            json_append_member(pdata, "quiver",
+                               json_mkstring(qv.c_str()));
+        }
+        else
+        {
+            json_append_member(pdata, "quiver",
+                               json_mkstring(""));
+        }
+
+        // Noise level and silence.
+        if (i == 0)
+        {
+            bool sil = silenced(you.pos());
+            int noise = sil ? 0 : you.get_noise_perception(true);
+            json_append_member(pdata, "noise",
+                               json_mknumber(noise));
+            json_append_member(pdata, "silenced",
+                               json_mkbool(sil));
+        }
+        else
+        {
+            json_append_member(pdata, "noise", json_mknumber(0));
+            json_append_member(pdata, "silenced", json_mkbool(false));
+        }
+
         json_append_element(player_arr, pdata);
     }
     json_append_member(state, "players", player_arr);
 
     json_append_member(state, "shared_gold",
                        json_mknumber(mp_state.shared_gold));
+
+    // Messages are now sent per-player via "messages" type, not broadcast.
+
+    // Ground items: send all items on the floor so clients can render them.
+    {
+        JsonNode *items_arr = json_mkarray();
+        for (int i = 0; i < MAX_ITEMS; i++)
+        {
+            const item_def& item = env.item[i];
+            if (!item.defined() || !in_bounds(item.pos))
+                continue;
+            // Skip items in player/monster inventory (pos -1,-1 or -2,-2).
+            if (item.pos.x < 0)
+                continue;
+
+            JsonNode *idata = json_mkobject();
+            json_append_member(idata, "x", json_mknumber(item.pos.x));
+            json_append_member(idata, "y", json_mknumber(item.pos.y));
+            json_append_member(idata, "base_type",
+                               json_mknumber((int)item.base_type));
+            json_append_member(idata, "sub_type",
+                               json_mknumber(item.sub_type));
+            json_append_member(idata, "quantity",
+                               json_mknumber(item.quantity));
+            json_append_member(idata, "colour",
+                               json_mknumber(item.get_colour()));
+            json_append_member(idata, "rnd",
+                               json_mknumber(item.rnd));
+            json_append_member(idata, "plus",
+                               json_mknumber(item.plus));
+            json_append_member(idata, "special",
+                               json_mknumber(item.special));
+            json_append_element(items_arr, idata);
+        }
+        json_append_member(state, "items", items_arr);
+    }
+
+    // Monsters: send visible monster data so clients can render them.
+    {
+        JsonNode *mons_arr = json_mkarray();
+        for (int i = 0; i < MAX_MONSTERS; i++)
+        {
+            const monster& mons = env.mons[i];
+            if (!mons.alive() || !in_bounds(mons.pos()))
+                continue;
+
+            JsonNode *mdata = json_mkobject();
+            json_append_member(mdata, "x", json_mknumber(mons.pos().x));
+            json_append_member(mdata, "y", json_mknumber(mons.pos().y));
+            json_append_member(mdata, "type",
+                               json_mknumber((int)mons.type));
+            json_append_member(mdata, "attitude",
+                               json_mknumber((int)mons.attitude));
+            json_append_member(mdata, "hd",
+                               json_mknumber(mons.get_hit_dice()));
+
+            // Send the name and base type for display.
+            json_append_member(mdata, "name",
+                               json_mkstring(mons.name(DESC_PLAIN).c_str()));
+            json_append_member(mdata, "base_type",
+                               json_mknumber((int)mons.base_monster));
+
+            json_append_element(mons_arr, mdata);
+        }
+        json_append_member(state, "monsters", mons_arr);
+    }
+
+    // Current place (all players are on the same level).
+    {
+        string place = branches[you.where_are_you].shortname;
+        if (brdepth[you.where_are_you] > 1)
+            place += make_stringf(":%d", you.depth);
+        json_append_member(state, "place", json_mkstring(place.c_str()));
+    }
 
     char *encoded = json_encode(state);
     string msg(encoded);

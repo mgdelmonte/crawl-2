@@ -55,7 +55,14 @@
 #include "viewchar.h"
 #include "view.h"
 #include "xom.h"
+#include "multiplayer.h"
 
+// Returns 1 when multiplayer is active (to make room for the status line
+// at row 1 of the HUD), 0 otherwise.
+static int _mp_hud_offset()
+{
+    return mp_state.enabled ? 1 : 0;
+}
 
 static bool _is_using_small_layout()
 {
@@ -641,7 +648,7 @@ void update_message_status()
 
     textcolour(LIGHTBLUE);
 
-    CGOTOXY(crawl_view.hudsz.x - strwidth(msg) + 1, 1, GOTO_STAT);
+    CGOTOXY(crawl_view.hudsz.x - strwidth(msg) + 1, 1 + _mp_hud_offset(), GOTO_STAT);
     CPRINTF(msg);
 
     textcolour(LIGHTGREY);
@@ -662,7 +669,7 @@ void update_turn_count()
     }
 
     const int turncount_start_x = 19 + 6;
-    int ypos = 9;
+    int ypos = 9 + _mp_hud_offset();
     // TODO: unify this with the calculation in print_stats
     if (you.has_mutation(MUT_HP_CASTING) && !_is_using_small_layout())
         ypos--;
@@ -864,7 +871,7 @@ static void _print_stats_gold(int x, int y)
     }
     else
     {
-        CGOTOXY(3, 2, GOTO_STAT);
+        CGOTOXY(3, 2 + _mp_hud_offset(), GOTO_STAT);
         CPRINTF("Gd ");
     }
     if (you.duration[DUR_GOZAG_GOLD_AURA])
@@ -1397,21 +1404,164 @@ static void _print_status_lights(int y)
 #endif
 
     // Reset cursor position so it doesn't complain if we completely fill our space.
-    CGOTOXY(1, 1, GOTO_STAT);
+    CGOTOXY(1, 1 + _mp_hud_offset(), GOTO_STAT);
 
     you.redraw_status_lights = false;
 }
 
+// Draw the multiplayer status line at row 1 of the host's HUD.
+static void _draw_mp_host_status_line()
+{
+    if (!mp_state.enabled)
+        return;
+
+    const int O = _mp_hud_offset();
+    (void)O; // row is always 1 for the status line
+
+    CGOTOXY(1, 1, GOTO_STAT);
+
+    string status;
+    if (!mp_state.game_started)
+    {
+        int need = 0;
+        for (int i = 0; i < num_players; i++)
+            if (!mp_state.player_connected[i])
+                need++;
+        status = make_stringf("Waiting for %d player%s to join",
+                              need, need == 1 ? "" : "s");
+    }
+    else
+    {
+        int my_idx = active_player_idx; // host is always 0
+        bool my_acted = mp_state.player_has_acted[my_idx];
+
+        if (!my_acted)
+        {
+            status = "Waiting on you";
+        }
+        else
+        {
+            int waiting_count = 0;
+            string waiting_name;
+            for (int i = 0; i < num_players; i++)
+            {
+                if (i == my_idx)
+                    continue;
+                if (mp_state.player_alive[i] && !mp_state.player_has_acted[i])
+                {
+                    waiting_count++;
+                    waiting_name = players[i].your_name;
+                }
+            }
+
+            if (waiting_count == 1)
+                status = "Waiting on " + waiting_name;
+            else if (waiting_count > 1)
+                status = make_stringf("Waiting on %d players", waiting_count);
+        }
+    }
+
+    if (!status.empty())
+    {
+        if (status.find("on you") != string::npos)
+            textcolour(LIGHTGREEN);
+        else
+            textcolour(YELLOW);
+        CPRINTF("%-39s", status.c_str());
+    }
+    else
+    {
+        CPRINTF("%-39s", ""); // clear the line
+    }
+
+    textcolour(LIGHTGREY);
+}
+
+// Flash the host's MP status line: briefly show in WHITE, then restore.
+void mp_flash_host_status()
+{
+    if (!mp_state.enabled)
+        return;
+
+    // Compute the current status string (same logic as _draw_mp_host_status_line).
+    string status;
+    if (!mp_state.game_started)
+    {
+        int need = 0;
+        for (int i = 0; i < num_players; i++)
+            if (!mp_state.player_connected[i])
+                need++;
+        status = make_stringf("Waiting for %d player%s to join",
+                              need, need == 1 ? "" : "s");
+    }
+    else
+    {
+        int my_idx = active_player_idx;
+        if (mp_state.player_has_acted[my_idx])
+        {
+            int wc = 0;
+            string wn;
+            for (int i = 0; i < num_players; i++)
+            {
+                if (i == my_idx) continue;
+                if (mp_state.player_alive[i] && !mp_state.player_has_acted[i])
+                {
+                    wc++;
+                    wn = players[i].your_name;
+                }
+            }
+            if (wc == 1)
+                status = "Waiting on " + wn;
+            else if (wc > 1)
+                status = make_stringf("Waiting on %d players", wc);
+            else
+                status = "Waiting on other players";
+        }
+    }
+
+    if (status.empty())
+        return;
+
+    CGOTOXY(1, 1, GOTO_STAT);
+    textbackground(GREEN);
+    textcolour(WHITE);
+    CPRINTF("%-39s", status.c_str());
+    textbackground(BLACK);
+    update_screen();
+    delay(150);
+    _draw_mp_host_status_line();
+    update_screen();
+}
+
+// Flash the client's MP status line: briefly show in WHITE, then restore.
+void mp_flash_client_status(const mp_client_stats& stats)
+{
+    if (stats.status_line.empty())
+        return;
+
+    CGOTOXY(1, 1, GOTO_STAT);
+    textbackground(GREEN);
+    textcolour(WHITE);
+    CPRINTF("%-39s", stats.status_line.c_str());
+    textbackground(BLACK);
+    update_screen();
+    delay(150);
+    mp_client_draw_stats(stats);
+    update_screen();
+}
+
 static void _draw_wizmode_flag(const char *word)
 {
+    const int O = _mp_hud_offset();
     textcolour(LIGHTMAGENTA);
     // 3+ for the " **"
-    CGOTOXY(1 + crawl_view.hudsz.x - (3 + strlen(word)), 1, GOTO_STAT);
+    CGOTOXY(1 + crawl_view.hudsz.x - (3 + strlen(word)), 1 + O, GOTO_STAT);
     CPRINTF(" *%s*", word);
 }
 
 static void _redraw_title()
 {
+    const int O = _mp_hud_offset();
     const unsigned int WIDTH = crawl_view.hudsz.x;
     string title = filtered_lang(player_title());
     title = you.your_name + (title[0] == ',' ? "" : " ") + title;
@@ -1439,8 +1589,8 @@ static void _redraw_title()
         }
     }
 
-    // Line 1: Foo the Bar    *WIZARD*
-    CGOTOXY(1, 1, GOTO_STAT);
+    // Line 1+O: Foo the Bar    *WIZARD*
+    CGOTOXY(1, 1 + O, GOTO_STAT);
     textcolour(small_layout && (you.wizard || you.explore) ? LIGHTMAGENTA : YELLOW);
     CPRINTF("%s", chop_string(title, WIDTH).c_str());
     if (you.wizard && !small_layout)
@@ -1453,10 +1603,10 @@ static void _redraw_title()
     update_message_status();
 #endif
 
-    // Line 2:
+    // Line 2+O:
     // Minotaur [of God] [Piety]
     textcolour(YELLOW);
-    CGOTOXY(1, 2, GOTO_STAT);
+    CGOTOXY(1, 2 + O, GOTO_STAT);
     string species = player_species_name();
     NOWRAP_EOL_CPRINTF("%s", species.c_str());
     if (you_worship(GOD_NO_GOD))
@@ -1466,7 +1616,7 @@ static void _redraw_title()
             && !had_gods())
         {
             if (small_layout)
-                CGOTOXY(3, 2, GOTO_STAT);
+                CGOTOXY(3, 2 + O, GOTO_STAT);
             string godpiety = "**....";
             textcolour(DARKGREY);
             if (small_layout || ((unsigned int)(strwidth(species) + strwidth(godpiety) + 1) <= WIDTH))
@@ -1484,7 +1634,7 @@ static void _redraw_title()
         string god;
         if (small_layout)
         {
-            CGOTOXY(2, 2, GOTO_STAT);
+            CGOTOXY(2, 2 + O, GOTO_STAT);
             god = "";
         }
         else
@@ -1497,14 +1647,14 @@ static void _redraw_title()
         const unsigned int textwidth = (unsigned int)(strwidth(species) + strwidth(god) + strwidth(piety) + 1);
         if (small_layout)
         {
-            CGOTOXY(3, 2, GOTO_STAT);
+            CGOTOXY(3, 2 + O, GOTO_STAT);
             piety.display();
         }
         else if (textwidth <= WIDTH)
             piety.display();
         clear_to_end_of_line();
         if (you_worship(GOD_GOZAG))
-            _print_stats_gold(textwidth + 2, 2);
+            _print_stats_gold(textwidth + 2, 2 + O);
     }
 
     textcolour(LIGHTGREY);
@@ -1518,7 +1668,8 @@ void print_stats()
     if (crawl_state.smallterm)
         return;
 #endif
-    int ac_pos = 5;
+    const int O = _mp_hud_offset();
+    int ac_pos = 5 + O;
     int ev_pos = ac_pos + 1;
 
     cursor_control coff(false);
@@ -1544,10 +1695,13 @@ void print_stats()
         you.redraw_status_lights = true;
     }
 
+    // Always redraw the MP status line (it changes with acted flags each turn).
+    _draw_mp_host_status_line();
+
     if (you.redraw_title)
         _redraw_title();
     if (you.redraw_hit_points)
-        _print_stats_hp(1, 3);
+        _print_stats_hp(1, 3 + O);
 
     int rows_hidden = 0;
     // hide the MP bar for djinni
@@ -1557,7 +1711,7 @@ void print_stats()
             rows_hidden++;
     }
     else if (you.redraw_magic_points)
-        _print_stats_mp(1, 4);
+        _print_stats_mp(1, 4 + O);
 
     // several of the following field names are printed in draw_border, not
     // here. It's supposed to be for things that don't ever change, but it's
@@ -1569,22 +1723,22 @@ void print_stats()
 
     for (int i = 0; i < NUM_STATS; ++i)
         if (you.redraw_stats[i])
-            _print_stat(static_cast<stat_type>(i), 19, 5 + i - rows_hidden);
+            _print_stat(static_cast<stat_type>(i), 19, 5 + O + i - rows_hidden);
     you.redraw_stats.init(false);
 
     if (you.redraw_doom)
-        _print_stats_doom(32, 5 - rows_hidden);
+        _print_stats_doom(32, 5 + O - rows_hidden);
 
     if (you.redraw_contam)
-        _print_stats_contam(30, 6 - rows_hidden);
+        _print_stats_contam(30, 6 + O - rows_hidden);
 
     if (you.redraw_experience)
     {
-        CGOTOXY(1, 8 - rows_hidden, GOTO_STAT);
+        CGOTOXY(1, 8 + O - rows_hidden, GOTO_STAT);
         textcolour(Options.status_caption_colour);
         CPRINTF("XL: ");
         if (_is_using_small_layout())
-            CGOTOXY(5, 8, GOTO_STAT);
+            CGOTOXY(5, 8 + O, GOTO_STAT);
         textcolour(HUD_VALUE_COLOUR);
         CPRINTF("%2d ", you.experience_level);
         if (you.experience_level >= you.get_max_xl())
@@ -1595,7 +1749,7 @@ void print_stats()
             if (!_is_using_small_layout())
                 CPRINTF("Next: ");
             else
-                CGOTOXY(14, 8, GOTO_STAT);
+                CGOTOXY(14, 8 + O, GOTO_STAT);
             textcolour(HUD_VALUE_COLOUR);
             CPRINTF("%2d%% ", get_exp_progress());
         }
@@ -1606,19 +1760,19 @@ void print_stats()
     if (Options.equip_bar)
     {
          if (you.gear_change || you.wield_change)
-            _print_stats_equip(1, 9 - rows_hidden);
+            _print_stats_equip(1, 9 + O - rows_hidden);
     }
     else if (you.redraw_noise)
-        _print_stats_noise(1, 9 - rows_hidden);
+        _print_stats_noise(1, 9 + O - rows_hidden);
 
     if (you.wield_change)
-        _print_stats_wp(10 - rows_hidden);
+        _print_stats_wp(10 + O - rows_hidden);
 
     if (you.redraw_quiver)
-        _print_stats_qv(11 - rows_hidden);
+        _print_stats_qv(11 + O - rows_hidden);
 
     if (you.redraw_status_lights)
-        _print_status_lights(12 - rows_hidden);
+        _print_status_lights(12 + O - rows_hidden);
 
 #ifndef USE_TILE_LOCAL
     assert_valid_cursor_pos();
@@ -1627,7 +1781,7 @@ void print_stats()
 
 void print_stats_level()
 {
-    int ypos = 8;
+    int ypos = 8 + _mp_hud_offset();
     // TODO: unify this with the calculation in print_stats
     if (you.has_mutation(MUT_HP_CASTING) && !_is_using_small_layout())
         ypos--;
@@ -1655,13 +1809,14 @@ void draw_border()
 
     textcolour(Options.status_caption_colour);
 
+    const int O = _mp_hud_offset();
     int ac_pos;
     // TODO: unify this calculation with rows_hidden in print_stats in a
     // non-insane way
     if (you.has_mutation(MUT_HP_CASTING) && !_is_using_small_layout())
-        ac_pos = 4;
+        ac_pos = 4 + O;
     else
-        ac_pos = 5;
+        ac_pos = 5 + O;
 
     int ev_pos = ac_pos + 1;
     int sh_pos = ac_pos + 2;
@@ -1682,6 +1837,221 @@ void draw_border()
     // "Noise:" printed elsewhere
     CGOTOXY(19, ac_pos + 4, GOTO_STAT);
     CPRINTF(Options.show_game_time ? "Time:" : "Turn:");
+}
+
+void mp_client_draw_stats(const mp_client_stats& stats)
+{
+    // Draw the HUD sidebar from pre-computed values.
+    // Uses GOTO_STAT region only — must not touch the map area.
+    // Line 1 is the MP status line; everything else shifts down by 1.
+    const int L = 1; // offset: status line is at row 1
+
+    // Line 1: MP status line
+    CGOTOXY(1, 1, GOTO_STAT);
+    if (!stats.status_line.empty())
+    {
+        // "Waiting on you" = green, others = yellow
+        if (stats.status_line.find("on you") != string::npos)
+            textcolour(LIGHTGREEN);
+        else
+            textcolour(YELLOW);
+        CPRINTF("%-39s", stats.status_line.c_str());
+    }
+    else
+    {
+        CPRINTF("%-39s", ""); // clear the line
+    }
+
+    const int ac_pos = L + 5;
+    const int ev_pos = ac_pos + 1;
+    const int sh_pos = ac_pos + 2;
+
+    // Line 2: title
+    CGOTOXY(1, L + 1, GOTO_STAT);
+    textcolour(YELLOW);
+    CPRINTF("%s", stats.title.c_str());
+
+    // Line 3: species
+    CGOTOXY(1, L + 2, GOTO_STAT);
+    textcolour(YELLOW);
+    NOWRAP_EOL_CPRINTF("%s", stats.species.c_str());
+
+    // Line 4: Health with bar
+    CGOTOXY(1, L + 3, GOTO_STAT);
+    textcolour(Options.status_caption_colour);
+    CPRINTF("Health: ");
+    {
+        // Colour HP value based on percentage.
+        short hp_col = HUD_VALUE_COLOUR;
+        if (stats.hp_max > 0)
+        {
+            int pct = stats.hp * 100 / stats.hp_max;
+            if (pct <= 25)
+                hp_col = RED;
+            else if (pct <= 50)
+                hp_col = YELLOW;
+        }
+        textcolour(hp_col);
+    }
+    CPRINTF("%d/%d", stats.hp, stats.hp_max);
+    // Pad to column 19 then draw bar.
+    {
+        int col = wherex() - crawl_view.hudp.x;
+        for (int i = 18 - col; i > 0; i--)
+            CPRINTF(" ");
+    }
+    // HP bar: '=' filled, '-' empty (LIGHTGREEN / DARKGREY).
+    {
+        const int bar_w = crawl_view.hudsz.x - 18;
+        int filled = stats.hp_max > 0
+                     ? bar_w * stats.hp / stats.hp_max : 0;
+        for (int b = 0; b < bar_w; b++)
+        {
+            if (b < filled)
+            {
+                textcolour(LIGHTGREEN);
+                putwch('=');
+            }
+            else
+            {
+                textcolour(DARKGREY);
+                putwch('-');
+            }
+        }
+    }
+
+    // Line 5: Magic with bar
+    CGOTOXY(1, L + 4, GOTO_STAT);
+    textcolour(Options.status_caption_colour);
+    CPRINTF("Magic:  ");
+    textcolour(HUD_VALUE_COLOUR);
+    CPRINTF("%d/%d", stats.mp, stats.mp_max);
+    // Pad to column 19 then draw bar.
+    {
+        int col = wherex() - crawl_view.hudp.x;
+        for (int i = 18 - col; i > 0; i--)
+            CPRINTF(" ");
+    }
+    // MP bar: '=' filled, '-' empty (LIGHTBLUE / DARKGREY).
+    {
+        const int bar_w = crawl_view.hudsz.x - 18;
+        int filled = stats.mp_max > 0
+                     ? bar_w * stats.mp / stats.mp_max : 0;
+        for (int b = 0; b < bar_w; b++)
+        {
+            if (b < filled)
+            {
+                textcolour(LIGHTBLUE);
+                putwch('=');
+            }
+            else
+            {
+                textcolour(DARKGREY);
+                putwch('-');
+            }
+        }
+    }
+
+    // Line 6: AC / Str
+    textcolour(Options.status_caption_colour);
+    CGOTOXY(1, ac_pos, GOTO_STAT);
+    CPRINTF("AC:");
+    textcolour(HUD_VALUE_COLOUR);
+    CGOTOXY(5, ac_pos, GOTO_STAT);
+    CPRINTF("%2d", stats.ac);
+    textcolour(Options.status_caption_colour);
+    CGOTOXY(19, ac_pos, GOTO_STAT);
+    CPRINTF("Str:");
+    textcolour(HUD_VALUE_COLOUR);
+    CGOTOXY(24, ac_pos, GOTO_STAT);
+    CPRINTF("%d", stats.str);
+
+    // Line 7: EV / Int
+    textcolour(Options.status_caption_colour);
+    CGOTOXY(1, ev_pos, GOTO_STAT);
+    CPRINTF("EV:");
+    textcolour(HUD_VALUE_COLOUR);
+    CGOTOXY(5, ev_pos, GOTO_STAT);
+    CPRINTF("%2d", stats.ev);
+    textcolour(Options.status_caption_colour);
+    CGOTOXY(19, ev_pos, GOTO_STAT);
+    CPRINTF("Int:");
+    textcolour(HUD_VALUE_COLOUR);
+    CGOTOXY(24, ev_pos, GOTO_STAT);
+    CPRINTF("%d", stats.intel);
+
+    // Line 8: SH / Dex
+    textcolour(Options.status_caption_colour);
+    CGOTOXY(1, sh_pos, GOTO_STAT);
+    CPRINTF("SH:");
+    textcolour(HUD_VALUE_COLOUR);
+    CGOTOXY(5, sh_pos, GOTO_STAT);
+    CPRINTF("%2d", stats.sh);
+    textcolour(Options.status_caption_colour);
+    CGOTOXY(19, sh_pos, GOTO_STAT);
+    CPRINTF("Dex:");
+    textcolour(HUD_VALUE_COLOUR);
+    CGOTOXY(24, sh_pos, GOTO_STAT);
+    CPRINTF("%d", stats.dex);
+
+    // Line 9: XL / Place
+    CGOTOXY(1, L + 8, GOTO_STAT);
+    textcolour(Options.status_caption_colour);
+    CPRINTF("XL: ");
+    textcolour(HUD_VALUE_COLOUR);
+    CPRINTF("%2d", stats.xl);
+    CGOTOXY(19, L + 8, GOTO_STAT);
+    textcolour(Options.status_caption_colour);
+    CPRINTF("Place: ");
+    textcolour(HUD_VALUE_COLOUR);
+    CPRINTF("%s", stats.place.c_str());
+
+    // Line 10 left: Noise
+    CGOTOXY(1, L + 9, GOTO_STAT);
+    textcolour(HUD_CAPTION_COLOUR);
+    CPRINTF("Noise: ");
+    if (stats.silenced)
+    {
+        textcolour(LIGHTMAGENTA);
+        CPRINTF("Silenced  ");
+    }
+    else
+    {
+        colour_t ncol;
+        if (stats.noise <= 333)
+            ncol = LIGHTGREY;
+        else if (stats.noise <= 666)
+            ncol = YELLOW;
+        else if (stats.noise < 1000)
+            ncol = RED;
+        else
+            ncol = LIGHTMAGENTA;
+        textcolour(ncol);
+        // Simple bar: 9 chars wide
+        int filled = stats.noise > 0
+                     ? (stats.noise * 9 + 999) / 1000 : 0;
+        for (int b = 0; b < 9; b++)
+            CPRINTF(b < filled ? "-" : ".");
+    }
+
+    // Line 10 right: Turn/Time
+    CGOTOXY(19, L + 9, GOTO_STAT);
+    textcolour(Options.status_caption_colour);
+    CPRINTF(Options.show_game_time ? "Time:" : "Turn:");
+    textcolour(HUD_VALUE_COLOUR);
+    CPRINTF(" %d", stats.turn);
+
+    // Line 11: Weapon
+    CGOTOXY(1, L + 10, GOTO_STAT);
+    textcolour(HUD_VALUE_COLOUR);
+    CPRINTF("%-39s", stats.weapon.empty()
+                     ? "Nothing wielded" : stats.weapon.c_str());
+
+    // Line 12: Quiver
+    CGOTOXY(1, L + 11, GOTO_STAT);
+    textcolour(HUD_VALUE_COLOUR);
+    CPRINTF("%-39s", stats.quiver.empty()
+                     ? "" : stats.quiver.c_str());
 }
 
 #ifndef USE_TILE_LOCAL

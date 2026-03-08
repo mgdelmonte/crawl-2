@@ -168,6 +168,13 @@ void replay_messages_during_startup();
 void set_more_autoclear(bool on);
 
 string get_last_messages(int mcount, bool full = false);
+
+// Multiplayer message capture: when enabled, messages are diverted to a
+// capture buffer instead of the normal message log / display.
+void mp_start_message_capture();
+string mp_stop_message_capture(); // returns captured messages, clears buffer
+void mp_start_message_mirror();   // like capture, but messages also display normally
+string mp_stop_message_mirror();  // returns captured messages, clears buffer
 bool recent_error_messages();
 
 int channel_to_colour(msg_channel_type channel, int param = 0);

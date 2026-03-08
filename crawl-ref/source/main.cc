@@ -93,6 +93,7 @@ extern char **environ;
 #include "known-items.h"
 #include "level-state-type.h"
 #include "libutil.h"
+#include "losglobal.h"
 #include "lookup-help.h"
 #include "luaterp.h"
 #include "macro.h"
@@ -105,6 +106,7 @@ extern char **environ;
 #include "mon-abil.h"
 #include "mon-act.h"
 #include "mon-cast.h"
+#include "mon-info.h"
 #include "mon-place.h"
 #include "mon-transit.h"
 #include "mon-util.h"
@@ -113,9 +115,13 @@ extern char **environ;
 #include "multiplayer.h"
 #include "mp-server.h"
 #include "mp-client.h"
+#if defined(TARGET_OS_WINDOWS) && !defined(USE_TILE_LOCAL)
+#include "libw32c.h"
+#endif
 #include "json.h"
 #include "json-wrapper.h"
 #include "nearby-danger.h"
+#include "newgame.h"
 #include "notes.h"
 #include "options.h"
 #include "output.h"
@@ -475,6 +481,30 @@ static string _client_key_to_command(int key)
     return result;
 }
 
+// Client display stats — populated from host game_state messages.
+static mp_client_stats _client_stats;
+
+// True once the client has received game_start from the host.
+static bool _client_game_started = false;
+
+// Helper: read a JSON string member, return empty string if missing.
+static string _json_str(JsonNode *obj, const char *key)
+{
+    JsonNode *n = json_find_member(obj, key);
+    if (n && n->tag == JSON_STRING)
+        return n->string_;
+    return "";
+}
+
+// Helper: read a JSON number member, return default if missing.
+static int _json_int(JsonNode *obj, const char *key, int def = 0)
+{
+    JsonNode *n = json_find_member(obj, key);
+    if (n && n->tag == JSON_NUMBER)
+        return (int)n->number_;
+    return def;
+}
+
 // Update the client display based on a game_state message from the host.
 static void _client_update_state(const string& json_msg)
 {
@@ -484,45 +514,61 @@ static void _client_update_state(const string& json_msg)
 
     int my_idx = mp_client.player_idx();
 
+    // Top-level state.
+    _client_stats.turn = _json_int(node, "turn");
+    _client_stats.place = _json_str(node, "place");
+
     JsonNode *player_arr = json_find_member(node, "players");
     if (player_arr && player_arr->tag == JSON_ARRAY)
     {
         JsonNode *pdata;
         json_foreach(pdata, player_arr)
         {
-            JsonNode *idx_n    = json_find_member(pdata, "idx");
-            JsonNode *x_n      = json_find_member(pdata, "x");
-            JsonNode *y_n      = json_find_member(pdata, "y");
-            JsonNode *hp_n     = json_find_member(pdata, "hp");
-            JsonNode *hp_max_n = json_find_member(pdata, "hp_max");
-            JsonNode *name_n   = json_find_member(pdata, "name");
-
-            if (!idx_n)
+            int idx = _json_int(pdata, "idx", -1);
+            if (idx < 0)
                 continue;
 
-            int idx = (int)idx_n->number_;
-            int x = x_n ? (int)x_n->number_ : 0;
-            int y = y_n ? (int)y_n->number_ : 0;
+            int x = _json_int(pdata, "x");
+            int y = _json_int(pdata, "y");
 
             if (idx == my_idx)
             {
-                // Update our player position and stats.
+                // Update our player position.
                 you.set_position(coord_def(x, y));
-                if (hp_n)
-                    you.hp = (int)hp_n->number_;
-                if (hp_max_n)
-                    you.hp_max = (int)hp_max_n->number_;
+                crawl_view.set_player_at(you.pos(), true);
+
+                // Populate display stats from host data.
+                _client_stats.title   = _json_str(pdata, "title");
+                _client_stats.species = _json_str(pdata, "species_name");
+                _client_stats.hp      = _json_int(pdata, "hp");
+                _client_stats.hp_max  = _json_int(pdata, "hp_max");
+                _client_stats.mp      = _json_int(pdata, "mp");
+                _client_stats.mp_max  = _json_int(pdata, "mp_max");
+                _client_stats.ac      = _json_int(pdata, "ac");
+                _client_stats.ev      = _json_int(pdata, "ev");
+                _client_stats.sh      = _json_int(pdata, "sh");
+                _client_stats.str     = _json_int(pdata, "str");
+                _client_stats.intel   = _json_int(pdata, "intel");
+                _client_stats.dex     = _json_int(pdata, "dex");
+                _client_stats.xl      = _json_int(pdata, "xl");
+                _client_stats.weapon  = _json_str(pdata, "weapon");
+                _client_stats.quiver  = _json_str(pdata, "quiver");
+                _client_stats.noise   = _json_int(pdata, "noise");
+                {
+                    JsonNode *sn = json_find_member(pdata, "silenced");
+                    _client_stats.silenced = sn && sn->tag == JSON_BOOL
+                                             && sn->bool_;
+                }
             }
             else if (idx >= 0 && idx < num_players)
             {
                 // Update other player positions.
                 players[idx].set_position(coord_def(x, y));
-                if (name_n && name_n->tag == JSON_STRING)
-                    players[idx].your_name = name_n->string_;
-                if (hp_n)
-                    players[idx].hp = (int)hp_n->number_;
-                if (hp_max_n)
-                    players[idx].hp_max = (int)hp_max_n->number_;
+                string name = _json_str(pdata, "name");
+                if (!name.empty())
+                    players[idx].your_name = name;
+                players[idx].hp     = _json_int(pdata, "hp");
+                players[idx].hp_max = _json_int(pdata, "hp_max");
             }
         }
     }
@@ -530,115 +576,472 @@ static void _client_update_state(const string& json_msg)
     json_delete(node);
 }
 
-// Client input loop: receive state from host, send commands.
-// Uses SDL input (tiles) or raw terminal input (console).
+// Client turn state: updated by _client_poll_messages(), read by
+// _client_input_loop() to decide whether to send commands.
+static bool _client_my_turn = false;
+// Set true after the client sends a command; prevents stale game_state
+// messages (with acted=false) from re-enabling _client_my_turn before
+// the host has processed the command.
+static bool _client_command_sent = false;
+// True once the client has received at least one game_state with a valid
+// player position. Prevents _client_update_visibility() from running
+// with the wrong initial position and marking wrong cells as seen.
+static bool _client_position_valid = false;
+
+// Client-side item storage: populated from game_state "items" array.
+struct mp_client_item
+{
+    coord_def pos;
+    object_class_type base_type;
+    uint8_t sub_type;
+    short quantity;
+    int colour;
+    uint8_t rnd;
+    short plus;
+    int special;
+};
+static vector<mp_client_item> _client_items;
+
+// Client-side monster storage: populated from game_state "monsters" array.
+struct mp_client_monster
+{
+    coord_def pos;
+    monster_type type;
+    mon_attitude_type attitude;
+    int hd;
+    string name;
+    monster_type base_type;
+};
+static vector<mp_client_monster> _client_monsters;
+
+// Update map_knowledge visibility based on player position.
+// Uses proper ray-traced LOS (cell_see_cell) so walls block visibility.
+// Cells in LOS get MAP_SEEN_FLAG | MAP_VISIBLE_FLAG and their feature
+// set from env.grid. Cells previously seen retain MAP_SEEN_FLAG (dimmed).
+// Cells never seen stay blank.
+static void _client_update_visibility()
+{
+    if (!_client_position_valid)
+        return;
+
+    for (int x = 0; x < GXM; x++)
+    {
+        for (int y = 0; y < GYM; y++)
+        {
+            coord_def gc(x, y);
+            map_cell& cell = env.map_knowledge(gc);
+
+            if (you.see_cell(gc))
+            {
+                const bool first_seen = !(cell.flags & MAP_SEEN_FLAG);
+                cell.set_feature(env.grid[x][y]);
+                cell.clear_monster();
+                cell.clear_item();
+                cell.flags |= MAP_SEEN_FLAG | MAP_VISIBLE_FLAG;
+
+                // Announce notable features seen for the first time.
+                if (first_seen)
+                {
+                    dungeon_feature_type feat = env.grid[x][y];
+                    if (!is_boring_terrain(feat))
+                    {
+                        string desc =
+                            feature_description_at(gc, false, DESC_A);
+                        mprf(MSGCH_PLAIN, "Found %s.", desc.c_str());
+                    }
+                }
+            }
+            else
+            {
+                // Clear visibility flag; MAP_SEEN_FLAG persists so
+                // previously seen cells show as remembered (dimmed).
+                cell.flags &= ~MAP_VISIBLE_FLAG;
+                // Also clear transient data (monsters, items) from
+                // non-visible cells so stale data doesn't persist.
+                cell.clear_monster();
+                cell.clear_item();
+            }
+        }
+    }
+
+    // Apply items to visible cells.
+    for (const auto& ci : _client_items)
+    {
+        if (!in_bounds(ci.pos) || !you.see_cell(ci.pos))
+            continue;
+
+        // Only set the first (top) item per cell.
+        if (env.map_knowledge(ci.pos).item())
+            continue;
+
+        item_def it;
+        it.base_type = ci.base_type;
+        it.sub_type = ci.sub_type;
+        it.quantity = ci.quantity;
+        it.rnd = ci.rnd;
+        it.plus = ci.plus;
+        it.special = ci.special;
+        it.pos = ci.pos;
+        // Force the colour so the client doesn't need full item tables.
+        if (ci.colour)
+            it.props[FORCED_ITEM_COLOUR_KEY] = ci.colour;
+
+        // Check if there are more items at this position.
+        bool more = false;
+        for (const auto& ci2 : _client_items)
+        {
+            if (&ci2 != &ci && ci2.pos == ci.pos)
+            {
+                more = true;
+                break;
+            }
+        }
+
+        env.map_knowledge(ci.pos).set_item(it, more);
+    }
+
+    // Apply monsters to visible cells.
+    for (const auto& cm : _client_monsters)
+    {
+        if (!in_bounds(cm.pos) || !you.see_cell(cm.pos))
+            continue;
+
+        monster_info mi(cm.type);
+        mi.pos = cm.pos;
+        mi.type = cm.type;
+        mi.base_type = cm.base_type;
+        mi.attitude = cm.attitude;
+        mi.hd = cm.hd;
+        mi.mname = cm.name;
+        mi.dam = MDAM_OKAY;
+        mi.threat = MTHRT_TRIVIAL;
+
+        env.map_knowledge(cm.pos).set_monster(mi);
+    }
+}
+
+// Place other players into map_knowledge so they render on the map.
+static void _client_show_other_players()
+{
+    int my_idx = mp_client.player_idx();
+    for (int i = 0; i < num_players; i++)
+    {
+        if (i == my_idx)
+            continue;
+        coord_def gp = players[i].pos();
+        if (gp.origin() || !in_bounds(gp))
+            continue;
+        if (!you.see_cell(gp))
+            continue;
+
+        monster_info mi(MONS_PLAYER);
+        mi.pos = gp;
+        mi.attitude = ATT_FRIENDLY;
+        mi.type = MONS_PLAYER;
+        mi.base_type = MONS_PLAYER;
+        mi.mname = players[i].your_name;
+        mi.props["name"] = players[i].your_name;
+        mi.i_ghost.species = players[i].species;
+        mi.i_ghost.job = players[i].char_class;
+        mi.i_ghost.religion = GOD_NO_GOD;
+        mi.i_ghost.best_skill = SK_FIGHTING;
+        mi.i_ghost.best_skill_rank = 2;
+        mi.i_ghost.xl_rank = 3;
+        mi.hd = players[i].experience_level;
+        mi.dam = MDAM_OKAY;
+        mi.threat = MTHRT_TRIVIAL;
+
+        env.map_knowledge(gp).set_monster(mi);
+    }
+}
+
+// Process a single level_data message from the host.
+// Stores raw grid data only; visibility is computed later by
+// _client_update_visibility() once the player position is known.
+static void _client_handle_level_data(JsonNode *node)
+{
+    JsonNode *grid_node = json_find_member(node, "grid");
+    if (grid_node && grid_node->tag == JSON_ARRAY)
+    {
+        // New level data: clear all map knowledge and wait for the next
+        // game_state to provide a valid player position before computing
+        // visibility. This prevents stale map data from persisting.
+        _client_position_valid = false;
+        for (int cx = 0; cx < GXM; cx++)
+            for (int cy = 0; cy < GYM; cy++)
+                env.map_knowledge(coord_def(cx, cy)).clear();
+
+        int i = 0;
+        JsonNode *val;
+        json_foreach(val, grid_node)
+        {
+            int x = i % GXM;
+            int y = i / GXM;
+            if (x < GXM && y < GYM)
+            {
+                dungeon_feature_type feat =
+                    static_cast<dungeon_feature_type>((int)val->number_);
+                env.grid[x][y] = feat;
+            }
+            i++;
+        }
+        // Grid changed: invalidate the global LOS cache so
+        // cell_see_cell() recomputes with the new wall layout.
+        invalidate_los();
+    }
+}
+
+// Process a single game_state message: update positions and turn status.
+static void _client_handle_game_state(const string& raw_msg, JsonNode *node)
+{
+    _client_update_state(raw_msg);
+
+    // Mark position as valid now that we have real data from the host.
+    // On the very first game_state, clear all map_knowledge so no stale
+    // data from the initial position (GXM/2, GYM/2) persists.
+    if (!_client_position_valid)
+    {
+        _client_position_valid = true;
+        for (int x = 0; x < GXM; x++)
+            for (int y = 0; y < GYM; y++)
+                env.map_knowledge(coord_def(x, y)).clear();
+    }
+
+    // Parse items from host.
+    _client_items.clear();
+    JsonNode *items_arr = json_find_member(node, "items");
+    if (items_arr && items_arr->tag == JSON_ARRAY)
+    {
+        JsonNode *idata;
+        json_foreach(idata, items_arr)
+        {
+            mp_client_item ci;
+            ci.pos.x = _json_int(idata, "x");
+            ci.pos.y = _json_int(idata, "y");
+            ci.base_type = static_cast<object_class_type>(
+                _json_int(idata, "base_type"));
+            ci.sub_type = (uint8_t)_json_int(idata, "sub_type");
+            ci.quantity = (short)_json_int(idata, "quantity");
+            ci.colour = _json_int(idata, "colour");
+            ci.rnd = (uint8_t)_json_int(idata, "rnd");
+            ci.plus = (short)_json_int(idata, "plus");
+            ci.special = _json_int(idata, "special");
+            _client_items.push_back(ci);
+        }
+    }
+
+    // Parse monsters from host.
+    _client_monsters.clear();
+    JsonNode *mons_arr = json_find_member(node, "monsters");
+    if (mons_arr && mons_arr->tag == JSON_ARRAY)
+    {
+        JsonNode *mdata;
+        json_foreach(mdata, mons_arr)
+        {
+            mp_client_monster cm;
+            cm.pos.x = _json_int(mdata, "x");
+            cm.pos.y = _json_int(mdata, "y");
+            cm.type = static_cast<monster_type>(
+                _json_int(mdata, "type"));
+            cm.attitude = static_cast<mon_attitude_type>(
+                _json_int(mdata, "attitude"));
+            cm.hd = _json_int(mdata, "hd");
+            cm.name = _json_str(mdata, "name");
+            cm.base_type = static_cast<monster_type>(
+                _json_int(mdata, "base_type"));
+            _client_monsters.push_back(cm);
+        }
+    }
+
+    JsonNode *player_arr = json_find_member(node, "players");
+    if (player_arr && player_arr->tag == JSON_ARRAY)
+    {
+        int my_idx = mp_client.player_idx();
+        bool my_acted = false;
+        bool my_alive = false;
+        int waiting_count = 0;       // alive players who haven't acted
+        string waiting_name;         // name of sole waiting player (if 1)
+
+        JsonNode *pdata;
+        json_foreach(pdata, player_arr)
+        {
+            int idx = _json_int(pdata, "idx", -1);
+            JsonNode *acted_n = json_find_member(pdata, "acted");
+            JsonNode *alive_n = json_find_member(pdata, "alive");
+            bool alive = alive_n ? alive_n->bool_ : false;
+            bool acted = acted_n ? acted_n->bool_ : false;
+
+            if (idx == my_idx)
+            {
+                my_alive = alive;
+                my_acted = acted;
+                if (acted && _client_command_sent)
+                {
+                    // Host confirmed our action; clear the sent flag.
+                    _client_command_sent = false;
+                }
+                // Only re-enable input if we haven't sent an unconfirmed
+                // command. This prevents stale game_state messages
+                // (arriving before the host processes our command) from
+                // letting us act twice.
+                if (!_client_command_sent)
+                    _client_my_turn = alive && !acted;
+            }
+
+            if (alive && !acted)
+            {
+                waiting_count++;
+                waiting_name = _json_str(pdata, "name");
+            }
+        }
+
+        // Compute status line for the HUD.
+        if (!_client_game_started)
+        {
+            // Still in pre-game (shouldn't normally get game_state
+            // before game_start, but be safe).
+            int need = num_players - 1;
+            _client_stats.status_line = make_stringf(
+                "Waiting for %d player%s to join",
+                need, need == 1 ? "" : "s");
+        }
+        else if (waiting_count == 0)
+        {
+            _client_stats.status_line = "";
+        }
+        else if (my_alive && !my_acted)
+        {
+            _client_stats.status_line = "Waiting on you";
+        }
+        else if (waiting_count == 1)
+        {
+            _client_stats.status_line = "Waiting on " + waiting_name;
+        }
+        else
+        {
+            _client_stats.status_line = make_stringf(
+                "Waiting on %d players", waiting_count);
+        }
+    }
+
+    // Messages are now handled via per-player "messages" type, not here.
+}
+
+// Pump callback for the client: polls TCP messages from the host and
+// updates dungeon/player state. Runs inside the SDL event loop during
+// getchm(), so tiles rendering happens naturally.
+static void _client_poll_messages()
+{
+    if (!mp_client.is_connected())
+        return;
+
+    auto messages = mp_client.poll_messages();
+    bool needs_redraw = false;
+
+    for (auto& msg : messages)
+    {
+        JsonNode *node = json_decode(msg.c_str());
+        if (!node)
+            continue;
+
+        JsonNode *type_node = json_find_member(node, "type");
+        string msg_type;
+        if (type_node && type_node->tag == JSON_STRING)
+            msg_type = type_node->string_;
+
+        if (msg_type == "game_state")
+        {
+            _client_handle_game_state(msg, node);
+            needs_redraw = true;
+        }
+        else if (msg_type == "turn_start")
+        {
+            _client_my_turn = true;
+            _client_command_sent = false;
+        }
+        else if (msg_type == "action_failed")
+        {
+            // Our command didn't consume a turn (e.g. walked into wall).
+            // Clear the sent flag so we can act again.
+            _client_command_sent = false;
+            _client_my_turn = true;
+        }
+        else if (msg_type == "messages")
+        {
+            // Per-player messages from the host.
+            JsonNode *text_n = json_find_member(node, "text");
+            if (text_n && text_n->tag == JSON_STRING)
+            {
+                istringstream iss(text_n->string_);
+                string line;
+                while (getline(iss, line))
+                {
+                    if (!line.empty())
+                        mpr(line);
+                }
+            }
+            needs_redraw = true;
+        }
+        else if (msg_type == "level_data")
+        {
+            _client_handle_level_data(node);
+            needs_redraw = true;
+        }
+
+        json_delete(node);
+    }
+
+    if (needs_redraw)
+    {
+        _client_update_visibility();
+        _client_show_other_players();
+        viewwindow();
+        mp_client_draw_stats(_client_stats);
+        display_message_window();
+        update_screen();
+    }
+}
+
+// Client input loop: blocks in getchm() which enters the tiles/SDL
+// event loop for proper rendering. TCP message polling runs in the
+// background via ui::pump_callback (same pattern as the host pre-game).
 static void _client_input_loop()
 {
-    bool my_turn = false;
+    ui::pump_callback = _client_poll_messages;
 
     while (mp_client.is_connected())
     {
-        // Poll for messages from host.
-        auto messages = mp_client.poll_messages();
-        for (auto& msg : messages)
+        // getchm() blocks in the SDL event loop (tiles) or terminal
+        // input (console). The pump_callback fires during the wait,
+        // processing TCP messages and triggering redraws.
+        int key = getchm(KMC_DEFAULT);
+
+        // Ignore keys that don't map to game commands.
+        if (_client_key_to_command(key).empty())
+            continue;
+
+        if (_client_my_turn)
         {
-            JsonNode *node = json_decode(msg.c_str());
-            if (!node)
-                continue;
-
-            JsonNode *type_node = json_find_member(node, "type");
-            string msg_type;
-            if (type_node && type_node->tag == JSON_STRING)
-                msg_type = type_node->string_;
-
-            if (msg_type == "game_state")
-            {
-                _client_update_state(msg);
-
-                // Check if it's our turn based on acted status.
-                JsonNode *player_arr = json_find_member(node, "players");
-                if (player_arr && player_arr->tag == JSON_ARRAY)
-                {
-                    JsonNode *pdata;
-                    json_foreach(pdata, player_arr)
-                    {
-                        JsonNode *idx_n = json_find_member(pdata, "idx");
-                        JsonNode *acted_n = json_find_member(pdata, "acted");
-                        JsonNode *alive_n = json_find_member(pdata, "alive");
-                        if (idx_n && (int)idx_n->number_ == mp_client.player_idx())
-                        {
-                            bool alive = alive_n ? alive_n->bool_ : false;
-                            bool acted = acted_n ? acted_n->bool_ : false;
-                            my_turn = alive && !acted;
-                        }
-                    }
-                }
-
-                // Redraw after state update.
-                viewwindow();
-                update_screen();
-            }
-            else if (msg_type == "turn_start")
-            {
-                my_turn = true;
-            }
-            else if (msg_type == "level_data")
-            {
-                // Update dungeon grid from host data.
-                JsonNode *grid_node = json_find_member(node, "grid");
-                if (grid_node && grid_node->tag == JSON_ARRAY)
-                {
-                    int i = 0;
-                    JsonNode *val;
-                    json_foreach(val, grid_node)
-                    {
-                        int x = i % GXM;
-                        int y = i / GXM;
-                        if (x < GXM && y < GYM)
-                        {
-                            dungeon_feature_type feat =
-                                static_cast<dungeon_feature_type>((int)val->number_);
-                            env.grid[x][y] = feat;
-                            // Mark cell as seen so the renderer draws it.
-                            env.map_knowledge(coord_def(x, y)).set_feature(feat);
-                            env.map_knowledge(coord_def(x, y)).flags
-                                |= MAP_SEEN_FLAG | MAP_VISIBLE_FLAG;
-                        }
-                        i++;
-                    }
-                }
-                viewwindow();
-                update_screen();
-            }
-
-            json_delete(node);
-        }
-
-        // If our turn, check for input and send commands.
-        if (my_turn && (has_pending_input() || kbhit()))
-        {
-            int key = getchm(KMC_DEFAULT);
             string json_cmd = _client_key_to_command(key);
             if (!json_cmd.empty())
             {
                 mp_client.send_command(json_cmd);
-                my_turn = false;
+                _client_my_turn = false;
+                _client_command_sent = true;
             }
         }
-
-#ifdef USE_TILE_LOCAL
-        ui::pump_events(0);
-#endif
-#ifdef TARGET_OS_WINDOWS
-        _sleep(10); // 10ms
-#else
-        usleep(10000); // 10ms
-#endif
+        else
+        {
+            // Flash the status line to indicate blocked.
+            mp_flash_client_status(_client_stats);
+        }
     }
+
+    ui::pump_callback = nullptr;
 }
 
-// Main client game function: connect to host, wait for game_start,
-// then enter input loop with tiles rendering.
+// Main client game function: show character selection, connect to host,
+// wait for game_start, then enter input loop with tiles rendering.
 static void _client_game()
 {
     // Use a separate save directory for the client to avoid database
@@ -650,22 +1053,23 @@ static void _client_game()
     }
 
     // Initialize data tables (monster symbols, spells, databases, etc.)
-    // so that viewwindow() can render the dungeon.
     initialize_game_data();
 
     // Set up console/tiles rendering.
     console_startup();
     crawl_state.io_inited = true;
 
-    // Mark game as started so messages display in the message window
-    // and viewwindow() renders properly.
-    crawl_state.game_started = true;
+    // --- Character selection (directly, no startup menu) ---
+    // Per MP design: client goes directly to race/class/name selection.
+    newgame_def choice = Options.game;
+    if (choice.type == GAME_TYPE_UNSPECIFIED)
+        choice.type = GAME_TYPE_NORMAL;
+    newgame_def defaults = read_startup_prefs();
+    newgame_def ng;
+    choose_game(ng, choice, defaults);
+    // ng now has name, species, job, weapon fully resolved.
 
-    // Set a temporary non-origin position so viewwindow() doesn't bail.
-    // This will be overwritten when we receive game_state from the host.
-    you.set_position(coord_def(GXM / 2, GYM / 2));
-
-    // Parse host:port from mp_connect_host.
+    // --- Connect to host ---
     string host_str = crawl_state.mp_connect_host;
     int port = crawl_state.mp_port;
 
@@ -678,6 +1082,10 @@ static void _client_game()
 
     if (host_str.empty())
         host_str = "localhost";
+
+    // Enable game rendering for connection status messages.
+    crawl_state.game_started = true;
+    you.set_position(coord_def(GXM / 2, GYM / 2));
 
     mprf(MSGCH_PLAIN, "Connecting to %s:%d...", host_str.c_str(), port);
     viewwindow();
@@ -699,8 +1107,12 @@ static void _client_game()
         JsonNode *idx_node = json_find_member(welcome, "player_idx");
         if (idx_node)
         {
-            int my_idx = (int)idx_node->number_;
-            mp_client.set_player_idx(my_idx);
+            mp_client.set_player_idx((int)idx_node->number_);
+            // Critical: set active_player_idx so `you` (which is
+            // players[active_player_idx]) refers to the correct slot.
+            // Without this, `you` = players[0] = the HOST's slot,
+            // causing position overwrites and rendering bugs.
+            active_player_idx = (int)idx_node->number_;
         }
         JsonNode *np_node = json_find_member(welcome, "num_players");
         if (np_node)
@@ -711,29 +1123,41 @@ static void _client_game()
     // Set up multiplayer state.
     mp_state.init(num_players);
 
-    // Set our player name.
-    string pname = Options.game.name;
-    if (pname.empty())
-        pname = make_stringf("Player %d", mp_client.player_idx() + 1);
-    you.your_name = pname;
+    // Set player identity from character selection.
+    // After active_player_idx changed, `you` refers to a different player
+    // slot, so we must re-initialize all properties on the new `you`.
+    you.your_name = ng.name;
+    you.species = ng.species;
+    you.char_class = ng.job;
 
-    // Send player_info to host with our character choices.
+    // Mark the player as present on the current level and set up
+    // vision so viewwindow() renders the map properly.
+    you.on_current_level = true;
+    you.current_vision = LOS_DEFAULT_RANGE;
+
+    // Re-set temporary position (will be overwritten by game_state).
+    you.set_position(coord_def(GXM / 2, GYM / 2));
+
+    // Initialize monster and map grids so the LOS opacity checks
+    // (monster_at, cloud_type_at) don't read garbage memory.
+    env.mgrid.init(NON_MONSTER);
+
+    // Initialize view geometry and tiles layout now that the player
+    // species is set (tiles do_layout() needs a valid species).
+    crawl_view.init_geometry();
+#ifdef USE_TILE
+    tiles.resize();
+#endif
+
+    // Send player_info to host with selected character.
     {
         JsonNode *info = json_mkobject();
         json_append_member(info, "type", json_mkstring("player_info"));
-        json_append_member(info, "name", json_mkstring(pname.c_str()));
-
-        if (Options.game.species != SP_UNKNOWN)
-        {
-            json_append_member(info, "species",
-                json_mkstring(species::get_abbrev(Options.game.species)));
-        }
-
-        if (Options.game.job != JOB_UNKNOWN)
-        {
-            json_append_member(info, "job",
-                json_mkstring(get_job_abbrev(Options.game.job)));
-        }
+        json_append_member(info, "name", json_mkstring(ng.name.c_str()));
+        json_append_member(info, "species",
+            json_mkstring(species::get_abbrev(ng.species)));
+        json_append_member(info, "job",
+            json_mkstring(get_job_abbrev(ng.job)));
 
         char *encoded = json_encode(info);
         mp_client.send_command(string(encoded));
@@ -741,8 +1165,23 @@ static void _client_game()
         json_delete(info);
     }
 
-    mprf(MSGCH_PLAIN, "Connected as %s. Waiting for game to start...", pname.c_str());
+    // Set pre-game status: we're connected, waiting for others.
+    // We count as 1 connected; the remaining num_players-1 need to join.
+    // But we don't know how many others have joined yet, so just report
+    // the total we're waiting for.
+    {
+        int waiting_for = num_players - 1; // excluding ourselves
+        _client_stats.status_line = make_stringf(
+            "Waiting for %d player%s to join",
+            waiting_for, waiting_for == 1 ? "" : "s");
+    }
+
+    mprf(MSGCH_PLAIN, "Connected as %s the %s %s. Waiting for game...",
+         ng.name.c_str(),
+         species::name(ng.species).c_str(),
+         get_job_name(ng.job));
     viewwindow();
+    mp_client_draw_stats(_client_stats);
     update_screen();
 
     // Wait for game_start.
@@ -750,8 +1189,10 @@ static void _client_game()
     if (start_msg.empty())
         end(1, false, "Timed out waiting for game start.");
 
+    _client_game_started = true;
     mprf(MSGCH_PLAIN, "Game started!");
     viewwindow();
+    mp_client_draw_stats(_client_stats);
     update_screen();
 
     // Enter client input loop (handles level_data, game_state, and input).
@@ -775,6 +1216,10 @@ static void _process_mp_command(int player_idx, const string& json_cmd)
     const int prev_idx = active_player_idx;
     active_player_idx = player_idx;
 
+    // Capture messages generated during this command so they go to the
+    // specific client, not the host's message window.
+    mp_start_message_capture();
+
     if (cmd_type == "move")
     {
         JsonNode *dx_node = json_find_member(node, "dx");
@@ -787,12 +1232,34 @@ static void _process_mp_command(int player_idx, const string& json_cmd)
             coord_def move(dx, dy);
             you.turn_is_over = false;
             move_player_action(move);
+
+            // Check for items at the new position — generates
+            // "You see here..." messages that normal _input() would
+            // produce via autopickup().
+            if (you.turn_is_over)
+                item_check();
         }
     }
     else if (cmd_type == "wait")
     {
         you.turn_is_over = true;
         you.time_taken = player_speed();
+    }
+
+    string captured = mp_stop_message_capture();
+
+    // Send captured messages to the specific client.
+    if (!captured.empty())
+    {
+        JsonNode *msg_obj = json_mkobject();
+        json_append_member(msg_obj, "type",
+                           json_mkstring("messages"));
+        json_append_member(msg_obj, "text",
+                           json_mkstring(captured.c_str()));
+        char *enc = json_encode(msg_obj);
+        mp_server.send_to(player_idx, string(enc));
+        free(enc);
+        json_delete(msg_obj);
     }
 
     if (you.turn_is_over)
@@ -868,6 +1335,10 @@ static void _handle_player_info(int pidx, const string& json_str)
     json_delete(node);
 }
 
+// Set by _mp_start_game() to tell _input() to silently consume the
+// synthetic escape key pushed to break out of the getch() wait loop.
+static bool _mp_consume_next_escape = false;
+
 // Start the game once all players have connected and sent player_info.
 // Broadcasts game_start, level_data, and initial game_state.
 static void _mp_start_game()
@@ -895,13 +1366,16 @@ static void _mp_start_game()
     viewwindow();
     update_screen();
 
-#ifdef USE_TILE_LOCAL
-    // Push a synthetic key event to break _input() out of its getch()
+    // Push a synthetic escape key to break _input() out of its getch()
     // wait loop, so _mp_host_input() can transition to the in-game phase.
-    // Use 27 (SDLK_ESCAPE / ASCII ESC), which _translate_keysym maps to
-    // CK_ESCAPE -> CMD_TARGET_CANCEL, a no-op outside targeting mode.
+    _mp_consume_next_escape = true;
+#ifdef USE_TILE_LOCAL
     if (wm)
         wm->push_key(27);
+#elif defined(TARGET_OS_WINDOWS)
+    // Console build: inject an Escape key into the console input buffer
+    // so ReadConsoleInputW returns and getch_ck() can exit.
+    w32_inject_key(0x1B, 27);  // VK_ESCAPE
 #endif
 }
 
@@ -978,11 +1452,22 @@ static void _mp_host_input()
 
         // If the game just started via polling, proceed to in-game phase.
         if (mp_state.game_started)
+        {
+            you.redraw_title = true;
+            you.redraw_hit_points = true;
+            you.redraw_magic_points = true;
+            you.redraw_armour_class = true;
+            you.redraw_evasion = true;
+            you.redraw_experience = true;
+            you.redraw_status_lights = true;
+            print_stats();
+            update_screen();
             return;
+        }
 
-#ifdef USE_TILE_LOCAL
-        // Tiles: install pump callback so connections are accepted while
-        // _input() blocks waiting for user input in the SDL event loop.
+        // Install pump callback so connections are accepted while
+        // _input() blocks waiting for user input (SDL event loop for
+        // tiles, ReadConsoleInputW for console).
         ui::pump_callback = _mp_poll_connections;
 
         _input();
@@ -993,27 +1478,22 @@ static void _mp_host_input()
         {
             ui::pump_callback = nullptr;
             you.turn_is_over = false;
+            // Force an immediate HUD redraw so the status line updates
+            // from "Waiting for N players to join" to "Waiting on you".
+            you.redraw_title = true;
+            you.redraw_hit_points = true;
+            you.redraw_magic_points = true;
+            you.redraw_armour_class = true;
+            you.redraw_evasion = true;
+            you.redraw_experience = true;
+            you.redraw_status_lights = true;
+            print_stats();
+            update_screen();
             return;
         }
 
         ui::pump_callback = nullptr;
         you.turn_is_over = false;
-#else
-        // Console: _input() blocks with no event pump, so only call it
-        // when there's pending input to avoid blocking connection polling.
-        if (has_pending_input() || kbhit())
-        {
-            _input();
-            if (you.turn_is_over && !mp_state.game_started)
-                you.turn_is_over = false;
-        }
-        else
-    #ifdef TARGET_OS_WINDOWS
-            _sleep(10); // 10ms
-    #else
-            usleep(10000); // 10ms
-    #endif
-#endif
         return;
     }
 
@@ -1039,6 +1519,18 @@ static void _mp_host_input()
 
         if (mp_state.player_has_acted[pidx])
             mp_server.broadcast_game_state();
+        else
+        {
+            // Command didn't consume the turn (e.g. move into wall).
+            // Tell the client they can retry.
+            JsonNode *retry = json_mkobject();
+            json_append_member(retry, "type",
+                               json_mkstring("action_failed"));
+            char *enc = json_encode(retry);
+            mp_server.send_to(pidx, string(enc));
+            free(enc);
+            json_delete(retry);
+        }
     }
 
     // Handle host player (player 0) input if not yet acted.
@@ -1049,39 +1541,66 @@ static void _mp_host_input()
         active_player_idx = 0;
         if (has_pending_input() || kbhit())
         {
+            // Mirror mode: capture messages for forwarding to clients
+            // while also displaying them in the host's message window.
+            mp_start_message_mirror();
+
             _input();
             // _input() calls world_reacts() when turn_is_over.
             // world_reacts() in MP mode will mark us as acted and
             // defer shared effects until all players have acted.
+
+            string captured = mp_stop_message_mirror();
+
+            // Forward captured messages to all remote clients.
+            if (!captured.empty())
+            {
+                for (int ci = 1; ci < num_players; ci++)
+                {
+                    if (!mp_state.player_alive[ci])
+                        continue;
+                    JsonNode *msg_obj = json_mkobject();
+                    json_append_member(msg_obj, "type",
+                                       json_mkstring("messages"));
+                    json_append_member(msg_obj, "text",
+                                       json_mkstring(captured.c_str()));
+                    char *enc = json_encode(msg_obj);
+                    mp_server.send_to(ci, string(enc));
+                    free(enc);
+                    json_delete(msg_obj);
+                }
+            }
         }
 
         // After host acts, broadcast state so clients see the host's move.
         if (mp_state.player_has_acted[0])
         {
             mp_server.broadcast_game_state();
+            // Force HUD redraw so status line updates immediately.
+            print_stats();
+            update_screen();
 
-            if (!mp_state.all_acted())
-            {
-                // Show which players we're waiting for.
-                for (int i = 1; i < num_players; i++)
-                {
-                    if (mp_state.player_alive[i]
-                        && !mp_state.player_has_acted[i])
-                    {
-                        mprf(MSGCH_PLAIN, "Waiting for %s...",
-                             players[i].your_name.c_str());
-                    }
-                }
-                viewwindow();
-                update_screen();
-            }
+            // Status line already shows who we're waiting for.
         }
+    }
+    else if (has_pending_input() || kbhit())
+    {
+        // Host has already acted — consume the pending key(s)
+        // and flash the status line to indicate they're blocked.
+        while (has_pending_input() || kbhit())
+            getchm(KMC_DEFAULT);
+
+        mp_flash_host_status();
     }
 
     // If all have acted, run shared world effects.
     if (mp_state.all_acted() && !mp_state.turn_just_completed)
     {
         mp_state.turn_just_completed = true;
+
+        // Capture messages from world effects (monster attacks, etc.)
+        // to forward to all clients.
+        mp_start_message_mirror();
 
         // Run shared world effects (monsters, clouds, etc.)
         for (int i = 0; i < num_players; i++)
@@ -1113,6 +1632,27 @@ static void _mp_host_input()
         }
         active_player_idx = 0;
 
+        string world_msgs = mp_stop_message_mirror();
+
+        // Forward world effect messages to all remote clients.
+        if (!world_msgs.empty())
+        {
+            for (int ci = 1; ci < num_players; ci++)
+            {
+                if (!mp_state.player_alive[ci])
+                    continue;
+                JsonNode *msg_obj = json_mkobject();
+                json_append_member(msg_obj, "type",
+                                   json_mkstring("messages"));
+                json_append_member(msg_obj, "text",
+                                   json_mkstring(world_msgs.c_str()));
+                char *enc = json_encode(msg_obj);
+                mp_server.send_to(ci, string(enc));
+                free(enc);
+                json_delete(msg_obj);
+            }
+        }
+
         clear_monster_flags();
         viewwindow();
         update_screen();
@@ -1128,6 +1668,11 @@ static void _mp_host_input()
         }
 
         mp_server.broadcast_game_state();
+
+        // Force HUD redraw — status line should now say "Waiting on you".
+        print_stats();
+        viewwindow();
+        update_screen();
     }
 
     active_player_idx = 0;
@@ -2248,8 +2793,14 @@ static void _input()
         // macro.
         if (!you.turn_is_over && cmd != CMD_NEXT_CMD)
         {
+            // Silently consume the synthetic escape key pushed by
+            // _mp_start_game() to break out of the getch() loop.
+            if (_mp_consume_next_escape && cmd == CMD_TARGET_CANCEL)
+            {
+                _mp_consume_next_escape = false;
+            }
             // In MP pre-game, block commands that could advance game time.
-            if (mp_state.enabled && !mp_state.game_started
+            else if (mp_state.enabled && !mp_state.game_started
                 && !_cmd_is_safe_pregame(cmd))
             {
                 int missing = 0;

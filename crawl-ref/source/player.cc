@@ -644,7 +644,9 @@ bool player::move_to(const coord_def& newpos, movement_type flags, bool defer_fi
     // multi-part movements or level transitions).
     if ((flags & MV_INTERNAL))
     {
-        crawl_view.set_player_at(newpos);
+        // In multiplayer, only recenter the view on the host's own player.
+        if (!mp_state.enabled || active_player_idx == 0)
+            crawl_view.set_player_at(newpos);
         set_position(newpos);
         return true;
     }
@@ -667,11 +669,18 @@ bool player::move_to(const coord_def& newpos, movement_type flags, bool defer_fi
     last_move_flags = flags;
 
     // Move the player to new location.
-    crawl_view.set_player_at(newpos);
-    set_position(newpos);
-
-    viewwindow();
-    update_screen();
+    // In multiplayer, only recenter the view for the host's own player.
+    if (!mp_state.enabled || active_player_idx == 0)
+    {
+        crawl_view.set_player_at(newpos);
+        set_position(newpos);
+        viewwindow();
+        update_screen();
+    }
+    else
+    {
+        set_position(newpos);
+    }
 
     // Finalise immediately if we weren't told to defer.
     if (!defer_finalisation)
@@ -8056,7 +8065,8 @@ bool player::is_skeletal() const
 
 void player::shiftto(const coord_def &c)
 {
-    crawl_view.shift_player_to(c);
+    if (!mp_state.enabled || active_player_idx == 0)
+        crawl_view.shift_player_to(c);
     set_position(c);
     clear_invalid_constrictions();
 }

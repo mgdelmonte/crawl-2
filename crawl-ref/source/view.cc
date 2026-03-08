@@ -683,7 +683,7 @@ void viewwindow(bool show_updates, bool tiles_only, animation *a, view_renderer 
             view_clear_overlays();
         }
 
-        if (show_updates)
+        if (show_updates && !crawl_state.mp_connect)
             player_view_update();
 
         if (_viewwindow_should_render())

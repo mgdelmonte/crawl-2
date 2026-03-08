@@ -63,6 +63,7 @@
 #include "libutil.h"
 #include "options.h"
 #include "state.h"
+#include "ui.h"
 #include "unicode.h"
 #include "unwind.h"
 #include "version.h"
@@ -256,14 +257,14 @@ static void _set_string_input(bool value)
 
     if (SetConsoleMode(inbuf, inmodes) == 0)
     {
-        fputs("Error initialising console input mode.", stderr);
-        exit(0);
+        // SetConsoleMode fails when stdin is a pipe (e.g. subprocess).
+        // This is non-fatal for MP host/client which use TCP for input.
+        fputs("Warning: could not set console input mode.\n", stderr);
     }
 
     if (SetConsoleMode(outbuf, outmodes) == 0)
     {
-        fputs("Error initialising console output mode.", stderr);
-        exit(0);
+        fputs("Warning: could not set console output mode.\n", stderr);
     }
 
     // now flush it
@@ -840,6 +841,9 @@ static int w32_proc_mouse_event(const MOUSE_EVENT_RECORD &mer)
     return 0;
 }
 
+// Pending injected key for getch_ck() to return.
+static int _w32_injected_key = 0;
+
 int getch_ck()
 {
     INPUT_RECORD ir;
@@ -865,8 +869,44 @@ int getch_ck()
         if (crawl_state.seen_hups)
             return ESCAPE;
 
+        // Check for an injected key (e.g. from MP game start).
+        if (_w32_injected_key)
+        {
+            key = _w32_injected_key;
+            _w32_injected_key = 0;
+            return key;
+        }
+
+        // When a pump callback is active (e.g. MP client polling TCP),
+        // use a short wait instead of blocking forever so the callback
+        // runs frequently.
+        if (ui::pump_callback)
+        {
+            DWORD wait_result = WaitForSingleObject(inbuf, 50);
+            if (wait_result == WAIT_TIMEOUT)
+            {
+                ui::pump_callback();
+                continue;
+            }
+            else if (wait_result != WAIT_OBJECT_0)
+            {
+                ui::pump_callback();
+                continue;
+            }
+        }
+
         if (ReadConsoleInputW(inbuf, &ir, 1, &nread) == 0)
+        {
+            // If stdin is not a real console (piped), ReadConsoleInputW
+            // will always fail. Yield to pump_callback if available.
+            if (ui::pump_callback)
+            {
+                ui::pump_callback();
+                Sleep(50);
+                continue;
+            }
             fputs("Error in ReadConsoleInputW()!", stderr);
+        }
         if (nread > 0)
         {
             // ignore if it isn't a keyboard event.
@@ -903,6 +943,24 @@ int getch_ck()
     }
 
     return key;
+}
+
+void w32_inject_key(int vk, int ch)
+{
+    // Try writing to the real console input buffer first.
+    INPUT_RECORD ir = {};
+    ir.EventType = KEY_EVENT;
+    ir.Event.KeyEvent.bKeyDown = TRUE;
+    ir.Event.KeyEvent.wRepeatCount = 1;
+    ir.Event.KeyEvent.wVirtualKeyCode = vk;
+    ir.Event.KeyEvent.uChar.UnicodeChar = ch;
+    DWORD written = 0;
+    if (WriteConsoleInputW(inbuf, &ir, 1, &written) && written > 0)
+        return;
+
+    // Fallback: store the key so getch_ck() picks it up directly.
+    // This works even when stdin is piped (no real console buffer).
+    _w32_injected_key = ch ? ch : vk;
 }
 
 bool kbhit()

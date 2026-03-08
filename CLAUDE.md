@@ -148,6 +148,19 @@ This branch is a multiplayer version of the current (0.34) version of DCSS.  Som
     - if the host player quits, the entire game is over and all other players are disconnected
 
 
+## starting a new game
+- when the HOST starts (with --host X, where X is the number of players for the game) the normal starting menu is shown, the player on the host machine can start a new game, choose his race, class, and name, and the game begins in a special "waiting for all players" state:  in this state, the player can do anything EXCEPT take game-time actions, like moving or equipping.  He can do anything that does not affect the turn count (such as look at inventory, or set skill training, or look at spells) but if he tries to act, he gets a message that he can't act until all players are joined.
+- ONLY AFTER the host player has started the game in the "waiting for all players state" can other players connect.  When the client game connects, it sends the player DIRECTLY to the race/class/name selection menus (it does not show the starting menu); after race/class/name are chosen, the player joins the game in its "waiting for all players" state, the same as the host player, until ALL players have joined.  
+- When a new player joins (meaning, he has chosen his race/class/name), his sprite will be placed on the game map in the first open cell adjacent to any other player(s) already joined, and his sprite will become visible to all other joined players.  Similarly, he will see the sprites of all other joined players.
+- AFTER all players have joined, the game leaves the "waiting for all players" state, and now players may act on a first-come-first-served basis.
+
+
+## starting a saved game
+- when the HOST starts (with --host X, where X is the number of players for the game) and chooses a SAVED game, the game enters the "waiting for all players" state immediately; the game map is shown and the first player can do non-turn-count things like look at inventory, etc. (the same as with a new game).  But his character is the FIRST saved character in the game.  (See below for multiplayer saved game details.)
+- when each new client game connects (with --connect), that player is assigned to the NEXT saved character in the game, so that player order is determined by the order of connection; the new player is connected to the game in the "waiting for all players" state
+- just as with a new game, the "waiting for all players" state ends after all players have joined
+
+
 # saved games
 - the host machine is responsible for saving the game; other players' machines do not save the game
 - the host machine can load ONLY saved games that have the same number of players as the --host value
@@ -162,3 +175,14 @@ A dead player leaves behind a corpse.
 - "reach" attacks can reach across it
 - it never takes damage
 
+
+# TODO
+- after a player acts, "world reactions" EXCEPT FOR monsters taking turns and scheduled environmental changes (eg chaos, storms, cloud drift, etc.) should occur immediately (even while waiting for other players), and should update all affected players' screens.  These reactions include:
+  - opening or closing a door
+  - visibility changes for all players (opening a door should make the space beyond it visible to all players)
+  - moving
+  - moving by magic (eg blink, passwall, teleport)
+  - casting spells, particularly summoning spells
+  - throwing things
+  - picking up and dropping things
+  
