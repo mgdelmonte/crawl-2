@@ -61,6 +61,7 @@
  #include "tileview.h"
  #include "tile-flags.h"
 #endif
+#include "throw.h"
 #include "transform.h"
 #include "traps.h"
 #include "travel.h"
@@ -426,7 +427,10 @@ direction_chooser::direction_chooser(dist& moves_,
     show_floor_desc(args.show_floor_desc),
     show_boring_feats(args.show_boring_feats),
     hitfunc(args.hitfunc),
+    is_ranged_attack(args.is_ranged_attack),
+    is_piercing(args.is_piercing),
     default_place(args.default_place),
+    player_changed_target(false),
     renderer(*this),
     unrestricted(args.unrestricted),
     force_cancel(false),
@@ -1058,6 +1062,9 @@ static bool _blocked_ray(const coord_def &where)
 // finally doesn't harm allies.
 coord_def direction_chooser::find_acceptable_aim(const monster* focus)
 {
+    if (is_ranged_attack)
+        return best_ranged_aim(focus->pos(), is_piercing);
+
     if (!hitfunc)
         return coord_def();
 
@@ -1269,7 +1276,7 @@ coord_def direction_chooser::find_default_monster_target()
         if (_want_target_monster(targ, mode, hitfunc))
         {
             // If we shouldn't (or can't) refine our target, just return it.
-            if (Options.simple_targeting || !hitfunc)
+            if (Options.simple_targeting || !hitfunc && !is_ranged_attack)
                 return targ->pos();
 
             // Possibly adjust our aim at this monster to avoid hitting
@@ -1337,6 +1344,7 @@ const coord_def& direction_chooser::target() const
 void direction_chooser::set_target(const coord_def& new_target)
 {
     moves.target = new_target;
+    player_changed_target = true;
 }
 
 #ifdef USE_TILE
@@ -1580,54 +1588,65 @@ void direction_chooser::update_previous_target() const
     if (!map_bounds(target()))
         return;
 
-    // If directly targeting a monster, remember that monster.
-    const monster* m = monster_at(target());
-    if (m && you.can_see(*m))
-        you.prev_targ = m->mid;
-    else if (looking_at_you())
-        you.prev_targ = MID_PLAYER;
-    // Otherwise, find a monster near to our target and remember *that*.
-    else if (!Options.simple_targeting)
+    // Ranged attack auto-adjustment can place the cursor on a monster that isn't
+    // the player's primary target. Remember the initial target instead, unless
+    // the player adjusted direction manually.
+    if (is_ranged_attack && !player_changed_target && old_m && you.can_see(*old_m))
     {
-        if (hitfunc)
-            hitfunc->set_aim(target());
-
-        // If our previous monster target is among affected targets, prefer that
-        // one for consistency's sake.
-        if (old_m && _want_target_monster(old_m, mode, hitfunc))
+        you.prev_targ = old_m->mid;
+        you.prev_grd_targ = old_m->pos();
+    }
+    // Otherwise, if directly targeting a monster, remember that monster
+    else
+    {
+        const monster* m = monster_at(target());
+        if (m && you.can_see(*m))
+            you.prev_targ = m->mid;
+        else if (looking_at_you())
+            you.prev_targ = MID_PLAYER;
+        // Otherwise, find a monster near to our target and remember *that*.
+        else if (!Options.simple_targeting)
         {
-            if (hitfunc && hitfunc->is_affected(old_m->pos()))
-            {
-                you.prev_targ = old_m->mid;
-                return;
-            }
-        }
+            if (hitfunc)
+                hitfunc->set_aim(target());
 
-        // Otherwise, pick the closest one to the center of our aim.
-        for (radius_iterator ri(target(), LOS_DEFAULT); ri; ++ri)
-        {
-            if (!you.see_cell(*ri))
-                continue;
-
-            if (monster* mon = monster_at(*ri))
+            // If our previous monster target is among affected targets, prefer that
+            // one for consistency's sake.
+            if (old_m && _want_target_monster(old_m, mode, hitfunc))
             {
-                if (you.can_see(*mon)
-                    && _want_target_monster(mon, mode, hitfunc)
-                    && (!hitfunc || hitfunc->is_affected(mon->pos())))
+                if (hitfunc && hitfunc->is_affected(old_m->pos()))
                 {
-                    you.prev_targ = mon->mid;
+                    you.prev_targ = old_m->mid;
                     return;
                 }
             }
-        }
 
-        // Didn't find any valid monsters in affected area, so remember the spot
-        // itself instead.
-        you.prev_grd_targ = target();
+            // Otherwise, pick the closest one to the center of our aim.
+            for (radius_iterator ri(target(), LOS_DEFAULT); ri; ++ri)
+            {
+                if (!you.see_cell(*ri))
+                    continue;
+
+                if (monster* mon = monster_at(*ri))
+                {
+                    if (you.can_see(*mon)
+                        && _want_target_monster(mon, mode, hitfunc)
+                        && (!hitfunc || hitfunc->is_affected(mon->pos())))
+                    {
+                        you.prev_targ = mon->mid;
+                        return;
+                    }
+                }
+            }
+
+            // Didn't find any valid monsters in affected area, so remember the spot
+            // itself instead.
+            you.prev_grd_targ = target();
+        }
+        // Simple targeting just remembers whatever space you aimed at.
+        else
+            you.prev_grd_targ = target();
     }
-    // Simple targeting just remembers whatever space you aimed at.
-    else
-        you.prev_grd_targ = target();
 }
 
 bool direction_chooser::select(bool allow_out_of_range, bool endpoint)
@@ -2691,6 +2710,7 @@ bool direction_chooser::choose_direction()
     // Find a default target.
     set_target(!default_place.origin() ? default_place
                                        : find_default_target());
+    player_changed_target = false;
 
     // If requested, show the beam on startup.
     if (show_beam)
@@ -3515,22 +3535,24 @@ string get_monster_equipment_desc(const monster_info& mi,
     }
 #undef uninteresting
 
+    vector<string> item_descriptions;
+
+    // Dancing weapons have all their weapon information in their full_name, so
+    // we don't need to add another weapon description here (see Mantis 11887).
+    if (!weap.empty() && !mons_class_is_animated_weapon(mi.type)
+        && (level >= DESC_NOTEWORTHY_AND_WEAPON
+            || item_is_worth_listing(*mon_wpn)
+            || (mi.wields_two_weapons() && mon_alt && item_is_worth_listing(*mon_alt))))
+    {
+        item_descriptions.push_back(weap.substr(1)); // strip leading space
+    }
+
     // _describe_monster_weapon already took care of this
     if (mi.wields_two_weapons())
         mon_alt = 0;
 
     const bool mon_has_wand = mon_wnd;
     const bool mon_carry = mon_alt || mon_has_wand;
-
-    vector<string> item_descriptions;
-
-    // Dancing weapons have all their weapon information in their full_name, so
-    // we don't need to add another weapon description here (see Mantis 11887).
-    if (!weap.empty() && !mons_class_is_animated_weapon(mi.type)
-        && (level >= DESC_NOTEWORTHY_AND_WEAPON || item_is_worth_listing(*mon_wpn)))
-    {
-        item_descriptions.push_back(weap.substr(1)); // strip leading space
-    }
 
     // as with dancing weapons, don't claim armour echoes 'wear' their armour
     if (mon_arm && mi.type != MONS_ARMOUR_ECHO && mi.type != MONS_HAUNTED_ARMOUR)

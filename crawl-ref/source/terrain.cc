@@ -1204,11 +1204,6 @@ void dgn_move_entities_at(coord_def src, coord_def dst,
     // Move terrain colours and properties.
     env.pgrid(dst) = env.pgrid(src);
     env.grid_colours(dst) = env.grid_colours(src);
-#ifdef USE_TILE
-    tile_env.bk_fg(dst) = tile_env.bk_fg(src);
-    tile_env.bk_bg(dst) = tile_env.bk_bg(src);
-    tile_env.bk_cloud(dst) = tile_env.bk_cloud(src);
-#endif
     tile_env.flv(dst) = tile_env.flv(src);
 
     // Move vault masks.
@@ -1224,6 +1219,8 @@ void dgn_move_entities_at(coord_def src, coord_def dst,
     env.map_knowledge(dst) = env.map_knowledge(src);
     env.map_seen.set(dst, env.map_seen(src));
     StashTrack.move_stash(src, dst);
+
+    redraw_view_at(dst);
 }
 
 static bool _dgn_shift_feature(const coord_def &pos)
@@ -1579,10 +1576,12 @@ bool swap_features(const coord_def &pos1, const coord_def &pos2,
 
     // OK, now we guarantee the move.
 
+    const dungeon_feature_type temp_feat = env.grid(temp);
     (void) move_notable_thing(pos1, temp);
     env.markers.move(pos1, temp);
     dungeon_events.move_listeners(pos1, temp);
     env.grid(pos1) = DNGN_UNSEEN;
+    env.grid(temp) = feat1;
     env.pgrid(pos1) = terrain_property_t{};
 
     (void) move_notable_thing(pos2, pos1);
@@ -1594,6 +1593,7 @@ bool swap_features(const coord_def &pos1, const coord_def &pos2,
     (void) move_notable_thing(temp, pos2);
     env.markers.move(temp, pos2);
     dungeon_events.move_listeners(temp, pos2);
+    env.grid(temp) = temp_feat;
 
     // Swap features and colours.
     env.grid(pos2) = feat1;

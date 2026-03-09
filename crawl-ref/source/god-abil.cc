@@ -2997,7 +2997,9 @@ static bool _marionette_spell_attempt(monster& caster, spell_type spell,
 
     for (monster* targ : targs)
     {
-        if (!targ->alive())
+        // We verify alignment again at this point, just in case it's changed
+        // in the middle of Marionette (eg: by the monster charming something).
+        if (!targ->alive() || targ->wont_attack())
             continue;
 
         caster.foe = targ->mindex();
@@ -4971,6 +4973,7 @@ static void _ru_kill_skill(skill_type skill)
     you.can_currently_train.set(skill, false);
     reset_training();
     check_selected_skills();
+    update_four_winds(true);
 }
 
 static void _extra_sacrifice_code(ability_type sac)
@@ -5905,15 +5908,7 @@ spret uskayaw_grand_finale(bool fail)
     string attack_punctuation = attack_strength_punctuation(mons->hit_points);
 
     // kill the target
-    if (mons->type == MONS_ROYAL_JELLY && !mons->is_summoned())
-    {
-        // need to do this here, because react_to_damage is never called
-        mprf("%s explodes violently into a cloud of jellies%s",
-                                        mons->name(DESC_THE, false).c_str(), attack_punctuation.c_str());
-        schedule_trj_spawn_fineff(&you, mons, mons->pos(), mons->hit_points);
-    }
-    else
-        mprf("%s explodes violently%s", mons->name(DESC_THE, false).c_str(), attack_punctuation.c_str());
+    mprf("%s explodes violently%s", mons->name(DESC_THE, false).c_str(), attack_punctuation.c_str());
     mons->flags |= MF_EXPLODE_KILL;
     if (!mons->is_insubstantial())
     {
@@ -7078,7 +7073,7 @@ void makhleb_inscribe_mark(mutation_type mark)
 
     const int hploss = min(you.hp - 1, you.hp * 2 / 3);
     blood_spray(you.pos(), MONS_PLAYER, 50);
-    ouch(hploss, KILLED_BY_SELF_AIMED, MID_PLAYER, nullptr, true, nullptr, true);
+    ouch(hploss, KILLED_BY_SELF_AIMED, MID_PLAYER, nullptr, nullptr, true);
 
     perma_mutate(mark, 1, "inscribed by the player");
 

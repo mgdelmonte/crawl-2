@@ -54,6 +54,7 @@
 #include "stringutil.h"
 #include "terrain.h"
 #include "rltiles/tiledef-dngn.h"
+#include "rltiles/tiledef-gui.h"
 #include "tileview.h"
 #include "timed-effects.h"
 #include "traps.h"
@@ -244,36 +245,27 @@ static void _abyss_postvault_fixup()
 // side-effect
 static bool _sync_rune_knowledge(coord_def p)
 {
-    if (!in_bounds(p))
-        return false;
-    // somewhat convoluted because to update map knowledge properly, we need
-    // an actual rune item
-    const bool already = env.map_knowledge(p).item();
-    const bool rune_memory = already && env.map_knowledge(p).item()->is_type(
-                                                    OBJ_RUNES, RUNE_ABYSSAL);
+    ASSERT(in_bounds(p));
+
+    const item_def* item = env.map_knowledge(p).item();
+    const bool rune_memory = item && item->is_type(OBJ_RUNES, RUNE_ABYSSAL);
+
     for (stack_iterator si(p); si; ++si)
     {
         if (si->is_type(OBJ_RUNES, RUNE_ABYSSAL))
         {
             // found! make sure map memory is up-to-date
             if (!rune_memory)
-                env.map_knowledge(p).set_item(*si, already);
-
-            if (!you.see_cell(p))
-                env.map_knowledge(p).flags |= MAP_DETECTED_ITEM;
+            {
+                env.map_knowledge(p).set_item(*si, item != nullptr);
+                if (!you.see_cell(p))
+                    env.map_knowledge(p).flags |= MAP_DETECTED_ITEM;
+                redraw_view_at(p);
+            }
             return true;
         }
     }
-    // no rune found, clear as needed
-    if (already && (!rune_memory
-                    || !!(env.map_knowledge(p).flags & MAP_MORE_ITEMS)))
-    {
-        // something else seems to have been there, clear the rune but leave
-        // a remnant
-        env.map_knowledge(p).set_detected_item();
-    }
-    else
-        env.map_knowledge(p).clear();
+    // no rune found
     return false;
 }
 
@@ -866,6 +858,7 @@ static void _abyss_update_transporter(const coord_def &pos,
 // Assumes:
 // a) target can be truncated if not fully in bounds
 // b) source and target areas may overlap
+// c) squares outside the area to move have been cleared
 //
 static void _abyss_move_entities(coord_def target_centre,
                                  map_bitmask *shift_area_mask)
@@ -907,17 +900,12 @@ static void _abyss_move_entities(coord_def target_centre,
             if (map_bounds_with_margin(dst, MAPGEN_BORDER))
             {
                 shift_area_mask->set(dst);
-                // Wipe the destination clean before dropping things on it.
-                _abyss_wipe_square_at(dst);
                 _abyss_move_entities_at(src, dst);
                 _abyss_update_transporter(dst, source_centre, target_centre,
                                           original_area_mask);
             }
-            else
-            {
-                // Wipe the source clean even if the dst is not in bounds.
-                _abyss_wipe_square_at(src);
-            }
+            // Wipe the source clean even if the dst is not in bounds.
+            _abyss_wipe_square_at(src);
         }
     }
 
@@ -1009,13 +997,6 @@ static void _abyss_shift_level_contents_around_player(
 
     // Move stuff to its new home. This will also move the player.
     _abyss_move_entities(target_centre, &abyss_destruction_mask);
-
-    // [ds] Rezap everything except the shifted area. NOTE: the old
-    // code did not do this, leaving a repeated swatch of Abyss behind
-    // at the old location for every shift; discussions between Linley
-    // and dpeg on IRC confirm that this (repeated swatch of terrain left
-    // behind) was not intentional.
-    _abyss_wipe_unmasked_area(abyss_destruction_mask);
 
     // So far we've used the mask to track the portions of the level we're
     // preserving. The inverse of the mask represents the area to be filled
@@ -2235,6 +2216,8 @@ static void _corrupt_level_features_monster(const corrupt_env &cenv, monster mon
 
         const int roll = random2(3000);
 
+        bool shimmer = you.see_cell(*ri) && env.grid(*ri) != DNGN_SHALLOW_WATER &&
+                       !feat_is_deep_water(env.grid(*ri)) && !feat_is_lava(env.grid(*ri));
         // In the monster version of the effect we have an extra check here
         // which will prevent the effect from triggering _corrupt_square
         // on anything other than clear dungeon floor.
@@ -2246,10 +2229,22 @@ static void _corrupt_level_features_monster(const corrupt_env &cenv, monster mon
             if (roll < corrupt_perc_chance && _is_grid_corruptible(*ri))
                 _corrupt_square_monster(cenv, *ri);
             else if (roll < corrupt_flavor_chance && _is_grid_corruptible(*ri))
+            {
+                if (shimmer)
+                {
+                    flash_tile(*ri, random_choose(RED, BLUE, YELLOW,
+                                MAGENTA), 8, TILE_BOLT_CORRUPTION);
+                }
                 _corrupt_square_flavor(cenv, *ri);
+            }
         }
         else
         {
+            if (shimmer )
+            {
+                flash_tile(*ri, random_choose(RED, BLUE, YELLOW,
+                            MAGENTA), 8, TILE_BOLT_CORRUPTION);
+            }
             // chance to change the colour of any grid
             if (roll < corrupt_flavor_chance && _is_grid_corruptible(*ri))
                 _corrupt_square_flavor(cenv, *ri);
@@ -2332,8 +2327,6 @@ void lugonu_corrupt_level_monster(const monster &who)
     if (is_level_incorruptible_monster())
         return;
 
-    flash_view_delay(UA_MONSTER, MAGENTA, 200);
-
     corrupt_env cenv;
     _corrupt_choose_colours(&cenv);
     _corrupt_level_features_monster(cenv, who);
@@ -2345,8 +2338,8 @@ void lugonu_corrupt_level_monster(const monster &who)
     for (int i = 0; i < count; ++i)
         _spawn_corrupted_servant_near_monster(who);
 
-    // Allow extra time for the flash to linger.
-    scaled_delay(300);
+    // Allow extra time for the tile effects to linger.
+    scaled_delay(250);
 }
 
 /// Splash decorative corruption around the given space.

@@ -482,10 +482,12 @@ SHUFFLE:  ABCD
 :   dgn.persist.vaults_end_crystal = true
 SUBST:      x = b
 LFLOORTILE: floor_crystal
+:   set_border_fill_type('crystal_wall')
 : else
 :   dgn.persist.vaults_end_crystal = false
 SUBST:      x = v
 LFLOORTILE: floor_metal_silver
+:   set_border_fill_type('metal_wall')
 : end
 : if crawl.one_chance_in(36) then
 SUBVAULT: A : vaults_end_quadrant_prize_mall

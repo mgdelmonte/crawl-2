@@ -1321,5 +1321,8 @@ void tile_apply_properties(const coord_def &gc, packed_cell &cell)
 
         cell.add_overlay(tile);
     }
+
+    if (you.did_east_wind && grid_distance(you.pos(), gc) <= 2 && !cell_is_solid(gc))
+        cell.add_overlay(TILE_OVERLAY_EAST_WIND);
 }
 #endif

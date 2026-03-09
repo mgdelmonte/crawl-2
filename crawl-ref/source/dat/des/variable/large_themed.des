@@ -395,6 +395,9 @@ MONS:   skeletal warrior band / bone dragon w:1 / \
         lich w:1 / curse skull w:1 / ancient champion w:1
 SUBST:  1 = 11..., 2 = 222.., G : GGccV.
 : vault_metal_statue_setup(_G, "S", "soul conduit")
+: if you.in_branch("Depths") then
+FTILE:  .+123%*|SG = floor_necro_squares
+: end
 MAP
 cccccccccccccccccccccccccccccccc
 c....2....%||c...+....111c|%...c
@@ -464,41 +467,44 @@ xx.0........0.0..0.............
 ENDMAP
 
 NAME:   minmay_haunted_quarter
-ORIENT: northwest
 TAGS:   no_descent
+ORIENT: northwest
 DEPTH:  Depths, !Depths:$
 KMONS:  w = shadow wraith / phantasmal warrior / \
             flayed ghost / nothing w:950
+KMONS:  > = spectral storm dragon w:30 / eidolon
 KFEAT:  w = w
+KFEAT:  > = >
+FTILE:  .>| = floor_necro_squares
 MAP
 xxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 xcccccccccccccccccxxxxxxxxxx
-xc|||...wcxw..>..wxw..>..wx.
-xc|>|c.wwcxww.x.wwxww.x.wwx.
-xc|||cwwwcwwwxxwwwxwwwxwwwx.
-xcccccwwwcwwwxwwwxxwwwxwwwx.
-xccwwwwwwcwwwxwwwxwwwxxwwwx.
-xcwwwwwwwcwwwxwwwxwwwxwwwxx.
-xc.wwwwwccwwwxwwwxwwwxwwwx.
-xc.ccccccwwwxxwwwxwwwxwwwx.
-xc>cwwwwwwwwxwwwxxwwwxwwwx.
-xc..wwwwwwwwxwwwxwwwxxwwwx.
-xc.wwwwwwxxxxwwwxwwwxwwwxx.
-xcwwxxxxxxwwwwwwxwwwxwwwx.
-xxxxxwwwwwwwwwwxxwwwxwwwx.
-xxwwwwwwwwwwwwxxwwwxxwwwx.
-xx.wwwwwwwxxxxxwwwwxwwwxx.
-xx..wxxxxxxwwwwwwwwxwwwx.
-xx>xxxwwwwwwwwwwwwxxwwwx.
-xx..wwwwwwwwwwwxxxxwwwxx.
-xx.wwwwwwwwxxxxxwwwwwwx.
-xxwwwwxxxxxxwwwwwwwwwxx.
-xxxxxxxwwwwwwwwwwwwxxx.
-xxwwwwwwwwwwwwwwxxxx..
-xx.wwwwwwwwwxxxxx...
-xx..wwwxxxxxx....
-xx.xxxxx.....
-x.......
+xc|||...wcxw..>..wxw..>..wx'
+xc|>|c.wwcxww.x.wwxww.x.wwx'
+xc|||cwwwcwwwxxwwwxwwwxwwwx'
+xcccccwwwcwwwxwwwxxwwwxwwwx'
+xccwwwwwwcwwwxwwwxwwwxxwwwx'
+xcwwwwwwwcwwwxwwwxwwwxwwwxx'
+xc.wwwwwccwwwxwwwxwwwxwwwx'
+xc.ccccccwwwxxwwwxwwwxwwwx'
+xc>cwwwwwwwwxwwwxxwwwxwwwx'
+xc..wwwwwwwwxwwwxwwwxxwwwx'
+xc.wwwwwwxxxxwwwxwwwxwwwxx'
+xcwwxxxxxxwwwwwwxwwwxwwwx'
+xxxxxwwwwwwwwwwxxwwwxwwwx'
+xxwwwwwwwwwwwwxxwwwxxwwwx'
+xx.wwwwwwwxxxxxwwwwxwwwxx'
+xx..wxxxxxxwwwwwwwwxwwwx'
+xx>xxxwwwwwwwwwwwwxxwwwx'
+xx..wwwwwwwwwwwxxxxwwwxx'
+xx.wwwwwwwwxxxxxwwwwwwx'
+xxwwwwxxxxxxwwwwwwwwwxx'
+xxxxxxxwwwwwwwwwwwwxxx'
+xxwwwwwwwwwwwwwwxxxx''
+xx.wwwwwwwwwxxxxx'''
+xx..wwwxxxxxx''''
+xx.xxxxx'''''
+x'''''''
 ENDMAP
 
 #########################################################################
@@ -1212,6 +1218,7 @@ COLOUR: a = white
 TILE:   c = wall_brick_gray
 TILE:   a = wall_stone_gray
 : vault_metal_statue_setup(_G, "G", "soul conduit")
+FTILE:  @.1234$%*|_VG = floor_necro_squares
 MAP
 xxxx......@@@......xxxxxxxxxxxxxxxxxxxxxxxxxx
 xccc......1.1......cccccccccccccccccccccccccx
@@ -2350,12 +2357,12 @@ SUBST:  3 = 3G
 # Depths
 : else
 MONS:   ice dragon / white very ugly thing / freezing wraith / simulacrum
-MONS:   ettin simulacrum / spriggan defender simulacrum \
-        / golden dragon simulacrum / caustic shrike simulacrum
+MONS:   ettin simulacrum / spriggan defender simulacrum / \
+        golden dragon simulacrum / caustic shrike simulacrum
 MONS:   orange crystal statue
 :   mons("frost giant / blizzard demon / reaper ; " .. scythe("freezing"))
-MONS:   titan / wendigo / nargun
-MONS:   ice fiend / walking frostbound tome
+MONS:   titan w:20 / nargun
+MONS:   ice fiend / walking frostbound tome w:15
 : end
 # Monster, loot, and terrain handling common to all depths.
 NSUBST: . = 3=1 / 6=1. / 2=2 / 4=2. / 2=4 / 2=4. / 5 / 2=5. / .
@@ -3139,7 +3146,7 @@ SHUFFLE: })]!?'"X- / })]!?'"X- / {([?!"'~~
 SUBST:   * = <, ( = (:60 <, [ = [:60 <, ) = ):60 >, ] = ]:60 >, ~ = P
 : end
 # Theme loot includes Vp/Sp's best weapon apt & forested / dark scales / books.
-KITEM:   & = quick blade good_item / rapier randart / \
+KITEM:   & = quick blade good_item / rapier randart w:5 / athame randart w:5 / \
              swamp dragon scales randart / shadow dragon scales randart / \
              randbook disc:necromancy / randbook spells:summon_forest / \
              potion of lignification q:4 pre_id / sanguine talisman randart

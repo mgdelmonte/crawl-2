@@ -170,7 +170,8 @@ public:
                       string source = "",
                       string aux = "",
                       bool cleanup_dead = true,
-                      bool attacker_effects = true) = 0;
+                      bool attacker_effects = true,
+                      bool is_attack_damage = false) = 0;
     virtual bool heal(int amount) = 0;
     virtual void banish(const actor *agent, const string &who = "",
                         bool force = false) = 0;

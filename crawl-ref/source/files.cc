@@ -3339,6 +3339,7 @@ static bool _restore_game(const string& filename)
     // disabled. Doing this here rather in tags code because it can trigger
     // UI, which may not be safe if everything isn't fully loaded.
     check_selected_skills();
+    init_four_winds();
 
     return true;
 }
@@ -3586,6 +3587,24 @@ static bool _convert_obsolete_species()
                 "if you want to remain a Vampire.");
         }
         change_species_to(SP_HUMAN);
+        return true;
+    }
+    else if (you.species == SP_ARMATAUR)
+    {
+        if (!yesno(
+            "This Armataur save game cannot be loaded as-is. If you load it now,\n"
+            "your character will be converted to a Gale Centaur. Continue?",
+                       false, 'N'))
+        {
+            you.save->abort(); // don't even rewrite the header
+            delete you.save;
+            you.save = 0;
+            game_ended(game_exit::abort,
+                "Please load the save in an earlier version "
+                "if you want to remain an Armataur.");
+        }
+        change_species_to(SP_GALE_CENTAUR);
+        you.duration[DUR_STAMPEDE] = 0; // Was DUR_ROLLPAGE
         return true;
     }
 #endif

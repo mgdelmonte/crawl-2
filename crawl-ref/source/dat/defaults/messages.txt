@@ -107,6 +107,7 @@ force_more_message += create your gizmo
 force_more_message += malevolent force fills
 force_more_message += malevolence running through your instability
 force_more_message += You feel space start to destabilise
+force_more_message += You feel the winds around you beginning to shift
 
 ## Zot is coming!
 force_more_message += You have lingered too long
@@ -143,6 +144,7 @@ force_more_message += is wielding.*distortion
 # dancing weapons require special handling...
 force_more_message += there is a.*distortion
 force_more_message += of distortion comes into view
+force_more_message += encounter a dancing.* distortion
 
 # Banishment
 force_more_message += You are cast into the Abyss

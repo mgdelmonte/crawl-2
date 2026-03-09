@@ -2145,7 +2145,7 @@ local weaps = { "demon blade", "double sword", "triple sword",
                 "demon trident", "partisan", "bardiche", "demon whip",
                 "eveningstar", "great mace", "broad axe", "battleaxe",
                 "executioner's axe", "lajatang", "hand cannon", "longbow",
-                "triple crossbow", "rapier", "quick blade"}
+                "triple crossbow", "rapier", "athame", "quick blade"}
 weaps = util.random_subset(weaps, 3)
 
 local equips = {}

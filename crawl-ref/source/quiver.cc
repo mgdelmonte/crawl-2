@@ -335,6 +335,12 @@ namespace quiver
             return !you.confused();
         }
 
+        bool is_piercing() const override
+        {
+            const item_def* wpn = you.weapon();
+            return wpn && is_penetrating_attack(*wpn);
+        }
+
         bool allow_autofight() const override
         {
             return is_enabled();
@@ -350,6 +356,15 @@ namespace quiver
                 fire_warn_if_impossible(false, you.weapon()); // for messaging (TODO refactor; message about inscriptions?)
                 return;
             }
+            monster* mons = monster_at(target.target);
+            if (mons && is_valid_tempering_target(*mons, you, true) && !you.confused())
+            {
+                mprf("You deconstruct %s.", mons->name(DESC_THE).c_str());
+                monster_die(*mons, KILL_RESET, NON_MONSTER);
+                you.turn_is_over = true;
+                return;
+            }
+
             if (autofight_check() || !do_inscription_check())
                 return;
 
@@ -739,7 +754,7 @@ namespace quiver
 
                 // something to attack, let's do it:
                 you.turn_is_over = true;
-                if (!fight_melee(&you, mons) && targ_mid)
+                if (!player_fight(mons) && targ_mid)
                 {
                     // turn_is_over may have been reset to false by fight_melee, but
                     // a failed attempt to reach further should not be free; instead,
@@ -874,6 +889,11 @@ namespace quiver
         bool is_targeted() const override
         {
             return !you.confused();
+        }
+
+        bool is_piercing() const override
+        {
+            return item_slot >= 0 && item_slot < MAX_GEAR && is_penetrating_attack(you.inv[item_slot]);
         }
 
         bool allow_autofight() const override

@@ -4654,7 +4654,8 @@ static void _get_spell_description(const spell_type spell,
         const int hd = mon_owner->spell_hd();
         const int range = mons_spell_range_for_hd(spell, hd, mon_owner->is(MB_PLAYER_SERVITOR));
         const int minrange = (spell == SPELL_CALL_DOWN_LIGHTNING
-                                || spell == SPELL_FLASHING_BALESTRA) ? 2 : 0;
+                                || spell == SPELL_FLASHING_BALESTRA
+                                || spell == SPELL_BECKONING_GALE ? 3 : 0);
 
         description += "\nRange : ";
         description += range_string(range, -1, minrange);
@@ -5411,7 +5412,9 @@ static void _attacks_table_row(const monster_info &mi, mon_attack_desc_info &di,
         // From attack::calc_damage
         // damage = 1 + random2(monster attack damage)
         //          + random2(weapon damage) + random2(1 + enchant + slay)
-        const int base_dam = property(*wpn, PWPN_DAMAGE);
+        // (HACK?: Bake in the athame debuff roll into the max display.)
+        int base_dam = (wpn->sub_type == WPN_ATHAME) ? property(*wpn, PWPN_DAMAGE) + 4:
+                                                       property(*wpn, PWPN_DAMAGE);
         dam += brand_adjust_weapon_damage(base_dam, get_weapon_brand(*wpn), false) - 1;
         if (ranged && mons_class_flag(mi.type, M_ARCHER))
             dam += archer_bonus_damage(mi.hd);
@@ -6468,6 +6471,13 @@ static string _monster_stat_description(const monster_info& mi, bool mark_spells
 
     if (mons_class_flag(mi.type, M_BURROWS))
         result << uppercase_first(pronoun) << " can burrow through diggable terrain.\n";
+
+    if (mons_class_flag(mi.type, M_ACID_SPLASH))
+    {
+        result << uppercase_first(pronoun) << " "
+               << conjugate_verb("inflict", plural)
+               << " 1d5 acid damage when struck in melee.\n";
+    }
 
     // Insubstantialness should take priority.
     if (mons_class_flag(mi.type, M_INSUBSTANTIAL))

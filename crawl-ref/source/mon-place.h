@@ -15,6 +15,7 @@
 #include "mgen-enum.h"
 #include "mon-enum.h"
 #include "monster-type.h"
+#include "spell-type.h"
 #include "tag-version.h"
 #include "trap-type.h"
 
@@ -99,9 +100,11 @@ bool find_habitable_spot_near(const coord_def& where, monster_type mon_type,
                               const actor* in_sight_of = nullptr,
                               bool no_sanctuary = true);
 bool you_can_see_habitable_spot_near(coord_def pos, habitat_type habitat,
-                                     int max_radius, int exclude_radius = 0);
+                                     int max_radius, int exclude_radius = 0,
+                                     spell_type ignore_summons_of = SPELL_NO_SPELL);
 bool you_can_see_habitable_spot_near(habitat_type habitat, int max_radius,
-                                     int exclude_radius = 0);
+                                     int exclude_radius = 0,
+                                     spell_type ignore_summons_of = SPELL_NO_SPELL);
 
 monster_type random_demon_by_tier(int tier);
 monster_type summon_any_demon(monster_type dct, bool use_local_demons = false);

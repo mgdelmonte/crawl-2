@@ -193,7 +193,7 @@ void actor::shield_block_succeeded(actor *attacker)
         && (unrand_entry = get_unrand_entry(sh->unrand_idx))
         && unrand_entry->melee_effects)
     {
-        unrand_entry->melee_effects(sh, this, attacker, false, 0);
+        unrand_entry->melee_effects(sh, this, attacker, 0, nullptr);
     }
 }
 

@@ -24,8 +24,6 @@ public:
     Stash(const Stash &) = default;
     Stash& operator=(const Stash &) = default;
 
-    static bool is_boring_feature(dungeon_feature_type feat);
-
     static string stash_item_name(const item_def &item);
     void update();
     void save(writer&) const;

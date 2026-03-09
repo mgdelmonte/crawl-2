@@ -73,6 +73,13 @@ arbalest
 A large piece of machinery used for firing bolts, braced with steel and cranked
 with a windlass. It takes some time to load and fire.
 %%%%
+athame
+
+An ornate and bewitched ritual dagger. Even just wielding it will cost a small
+piece of your health, but blows made with it against those suffering negative
+statuses (other than poison) have increased base damage, up to +4 for two
+such baleful ailments.
+%%%%
 azure gem
 
 [[gem]]
@@ -91,7 +98,7 @@ A long pole with an enormous, cleaving blade on one end.
 %%%%
 barding
 
-Armour for the scaly midsections of nagas and armataurs.
+Armour for the scaly midsections of nagas and centaurs.
 %%%%
 battleaxe
 

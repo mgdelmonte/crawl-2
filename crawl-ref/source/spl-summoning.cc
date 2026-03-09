@@ -113,11 +113,12 @@ static mgen_data _pal_data(monster_type pal, int dur, spell_type spell,
 static bool _can_summon_any_of(const vector<monster_type>& mon_types,
                                int max_radius = 2,
                                int exclude_radius = 0,
-                               coord_def pos = you.pos())
+                               coord_def pos = you.pos(),
+                               spell_type origin_spell = SPELL_NO_SPELL)
 {
     habitat_type habitat = habitat_for_any(mon_types);
     return you_can_see_habitable_spot_near(pos, habitat, max_radius,
-                                           exclude_radius);
+                                           exclude_radius, origin_spell);
 }
 
 static bool _maybe_stop_summoning_prompt(const vector<monster_type>& types)
@@ -159,13 +160,17 @@ static bool _maybe_stop_summoning_prompt(const vector<monster_type>& types)
 // to do that if they're maintaining a damage aura that could abjure a monster
 // created.
 //
+// If origin spell is specified, this placement check will ignore monsters
+// created by the player using that spell (under the assumption that the spell
+// will remove those first).
+//
 // Returns true if the action should be aborted.
 bool player_summon_check(const vector<monster_type>& types, int max_range,
-                         int exclude_range, coord_def pos)
+                         int exclude_range, coord_def pos, spell_type origin_spell)
 {
     // First, make sure there's enough room to place at least one of the types of
     // monsters we've been given.
-    if (!_can_summon_any_of(types, max_range, exclude_range, pos.origin() ? you.pos() : pos))
+    if (!_can_summon_any_of(types, max_range, exclude_range, pos.origin() ? you.pos() : pos, origin_spell))
     {
         canned_msg(MSG_NO_AVAILABLE_SPACE);
         return false;
@@ -179,9 +184,10 @@ bool player_summon_check(const vector<monster_type>& types, int max_range,
     return true;
 }
 
-bool player_summon_check(monster_type type, int max_range, int exclude_range, coord_def pos)
+bool player_summon_check(monster_type type, int max_range, int exclude_range, coord_def pos,
+                         spell_type origin_spell)
 {
-    return player_summon_check(vector<monster_type>{type}, max_range, exclude_range, pos);
+    return player_summon_check(vector<monster_type>{type}, max_range, exclude_range, pos, origin_spell);
 }
 
 spret cast_summon_small_mammal(int pow, bool fail)
@@ -3276,9 +3282,8 @@ dice_def hoarfrost_cannonade_damage(int pow, bool finale)
 
 spret cast_hoarfrost_cannonade(const actor& agent, int pow, bool fail)
 {
-    // XXX: it would be nice to abort if there isn't space for the cannons,
-    // however recasting will remove old cannons *first*, and so may create
-    // space that didn't exist before casting. Possibly we should check....
+    if (agent.is_player() && !player_summon_check(MONS_HOARFROST_CANNON, 3, 1, you.pos(), SPELL_HOARFROST_CANNONADE))
+        return spret::abort;
 
     fail_check();
 
@@ -3646,6 +3651,7 @@ void launch_clockwork_bee(const actor& agent)
         }
 
         bee->speed_increment = 80;
+        queue_monster_for_action(bee);
         bee->props[CLOCKWORK_BEE_TARGET].get_int() = targ->mid;
     }
     else if (agent.is_player())
@@ -4209,7 +4215,7 @@ void paragon_attack_trigger()
         return;
 
     mpr("Your paragon attacks with you!");
-    fight_melee(paragon, targ);
+    mons_fight(paragon, targ);
     paragon->speed_increment += paragon->action_energy(EUT_ATTACK);
     you.did_trigger(DID_PARAGON);
 }
@@ -4543,45 +4549,19 @@ static bool _push_line_back(const coord_def& center, const coord_def& dir)
     return !actor_at(center + dir);
 }
 
+static bool _wall_is_okay(const coord_def& pos, bool water_okay)
+{
+    return !cell_is_solid(pos)
+            && env.grid(pos) != DNGN_LAVA
+            && (water_okay || env.grid(pos) != DNGN_DEEP_WATER)
+            && !feat_is_trap(env.grid(pos));
+}
 
 vector<coord_def> get_wall_ring_spots(const coord_def& center,
                                       const coord_def& aim,
                                       int num_walls, bool water_okay)
 {
-    vector<coord_def> spots;
-
-    // Convert aim to a compass direction
-    coord_def delta = (aim - center).sgn();
-
-    int dir = 0;
-    for (int i = 0; i < 8; ++i)
-    {
-        if (Compass[i] == delta)
-        {
-            dir = i;
-            break;
-        }
-    }
-
-    // Now choose adjacent compass spots to test
-    int start = dir - ((num_walls - 1) / 2);
-    if (start < 0)
-        start = start + 8;
-
-    for (int i = start; i < start + num_walls; ++i)
-    {
-        const int index = i % 8;
-        const coord_def spot = center + Compass[index];
-        if (in_bounds(spot) && !cell_is_solid(spot)
-            && env.grid(spot) != DNGN_LAVA
-            && (water_okay || env.grid(spot) != DNGN_DEEP_WATER)
-            && !feat_is_trap(env.grid(spot)))
-        {
-            spots.push_back(spot);
-        }
-    }
-
-    return spots;
+    return get_ring_spots(center, aim, num_walls, bind(_wall_is_okay, placeholders::_1, water_okay));
 }
 
 spret cast_splinterfrost_shell(const actor& agent, const coord_def& aim,

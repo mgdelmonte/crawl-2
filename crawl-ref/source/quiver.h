@@ -55,6 +55,7 @@ namespace quiver
         virtual bool is_enabled() const { return false; }
         virtual bool is_valid() const { return true; }
         virtual bool is_targeted() const { return false; }
+        virtual bool is_piercing() const { return false; }
         bool do_inscription_check() const;
 
         /// Should the action be triggered indirectly via autofight lua code,

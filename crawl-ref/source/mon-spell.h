@@ -2421,6 +2421,7 @@ static const mon_spellbook mspell_list[] =
        { SPELL_GHOSTLY_FIREBALL, 24, MON_SPELL_WIZARD },
        { SPELL_BIND_SOULS, 24, MON_SPELL_WIZARD },
        { SPELL_FLASH_FREEZE, 12, MON_SPELL_WIZARD },
+       { SPELL_DOMINATE_UNDEAD, 16, MON_SPELL_WIZARD },
       }
     },
 

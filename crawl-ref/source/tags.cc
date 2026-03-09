@@ -4018,7 +4018,7 @@ static void _tag_read_you(reader &th)
     {
         _fixup_species_mutations(MUT_RUGGED_BROWN_SCALES);
         _fixup_species_mutations(MUT_TOUGH_SKIN);
-        _fixup_species_mutations(MUT_ROLLPAGE);
+        _fixup_species_mutations(MUT_STAMPEDE);
         _fixup_species_mutations(MUT_AWKWARD_TONGUE);
     }
 

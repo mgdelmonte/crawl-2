@@ -75,7 +75,7 @@ static bool _check_monster_alert(const monster& mon)
         // And if it wasn't a monster that would get an encounter warning due to
         // being a summon, make sure to say something.
         if (mon.is_summoned())
-            mprf(MSGCH_WARN, "%s comes into view.", mon.name(DESC_A).c_str());
+            mprf(MSGCH_MONSTER_WARNING, "%s comes into view.", mon.name(DESC_A).c_str());
 
         more(true);
         return true;
@@ -490,8 +490,14 @@ void notice_new_monsters(vector<monster*>& monsters, vector<monster*>& to_announ
 
 
     if (crawl_state.is_repeating_cmd() || you_are_delayed())
+    {
         for (monster* mon : monsters)
+        {
+            if (!mon->alive())
+                continue;
             _try_seen_interrupt(*mon, to_announce.empty() ? SC_NONE : SC_NEWLY_SEEN);
+        }
+    }
 }
 
 void queue_monster_announcement(monster& mons, seen_context_type sc)

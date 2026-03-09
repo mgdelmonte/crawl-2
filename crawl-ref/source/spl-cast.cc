@@ -575,7 +575,7 @@ int calc_spell_power(spell_type spell)
         power /= 10 + (you.props[HORROR_PENALTY_KEY].get_int() * 3) / 2;
     }
 
-    if (you.duration[DUR_ENKINDLED] && spell_can_be_enkindled(spell))
+    if (you.duration[DUR_ENKINDLED] && spell_can_be_enkindled(spell) && !you.divine_exegesis)
         power = (power + (you.experience_level * 300)) * 3 / 2;
 
     if (you.wearing_ego(OBJ_ARMOUR, SPARM_COMMAND) && spell_typematch(spell, spschool::summoning))
@@ -1079,6 +1079,9 @@ spret cast_a_spell(bool check_range, spell_type spell, dist *_target,
         did_god_conduct(DID_SPELL_CASTING, 1 + random2(5));
         count_action(CACT_CAST, spell);
     }
+
+    if (you.duration[DUR_STAMPEDE] && you.has_mutation(MUT_EAST_WIND))
+        you.duration[DUR_STAMPEDE] += you.time_taken;
 
     finalize_mp_cost(hp_cost > 0);
     // Check if an HP payment brought us low enough
@@ -1650,6 +1653,9 @@ static int _to_hit_pct(const monster_info& mi, int acc)
         return 100;
 
     acc += mi.lighting_modifiers();
+    if (mi.is(MB_EXPOSED))
+        acc *= 2;
+
     if (acc <= 1)
         return mi.ev <= 2 ? 100 : 0;
 
@@ -1771,7 +1777,7 @@ static vector<string> _desc_gloom_chance(const monster_info& mi, int pow)
     if (mons_res_blind(mi.type))
         return vector<string>{"not susceptible"};
 
-    return vector<string>{make_stringf("chance to dazzle: %d%%", gloom_success_chance(pow, mi.hd))};
+    return vector<string>{make_stringf("chance to blind: %d%%", gloom_success_chance(pow, mi.hd))};
 }
 
 static vector<string> _desc_airstrike_bonus(const monster_info& mi)
@@ -3466,6 +3472,9 @@ void handle_channelled_spell()
         stop_channelling_spells(true);
         return;
     }
+
+    if (you.duration[DUR_STAMPEDE] && you.has_mutation(MUT_EAST_WIND))
+        you.duration[DUR_STAMPEDE] += you.time_taken;
 
     switch (you.attribute[ATTR_CHANNELLED_SPELL])
     {

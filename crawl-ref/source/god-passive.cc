@@ -1205,7 +1205,7 @@ void dithmenos_shadow_melee(actor* initial_target)
     mon->target     = target->pos();
     mon->foe        = target->mindex();
 
-    fight_melee(mon, target);
+    mons_fight(mon, target);
 
     // Store this action's target so that it can be reused on future turns.
     if (target->alive())
@@ -1500,7 +1500,7 @@ void dithmenos_shadow_shoot(const coord_def& targ, missile_type thrown_projectil
         && is_range_weapon(*mon->mslot_item(MSLOT_ALT_WEAPON)))
     {
         mon->swap_weapons(false);
-        ranged_attack_beam atk2(*mon, *launcher);
+        ranged_attack_beam atk2(*mon, *launcher, atk.beam);
         mons_throw(mon, atk2);
     }
 
@@ -1992,8 +1992,9 @@ static vector<monster*> _get_whirlwind_targets(coord_def pos)
 {
     vector<monster*> targets;
     for (adjacent_iterator ai(pos, true); ai; ++ai)
-        if (monster_at(*ai) && _can_attack_martial(monster_at(*ai)))
-            targets.push_back(monster_at(*ai));
+        if (monster* mon = monster_at(*ai))
+            if (_can_attack_martial(mon) && !you.whirlwind_targets.count(mon->mid))
+                targets.push_back(mon);
     sort(targets.begin(), targets.end());
     return targets;
 }
@@ -2032,6 +2033,7 @@ static bool _wu_jian_whirlwind(coord_def old_pos, coord_def new_pos,
                     ", with incredible momentum" : "");
 
         count_action(CACT_ATTACK, ATTACK_WHIRLWIND);
+        you.whirlwind_targets.insert(mons->mid);
 
         for (int i = 0; i < number_of_attacks; i++)
         {
@@ -2056,7 +2058,8 @@ static bool _wu_jian_whirlwind(coord_def old_pos, coord_def new_pos,
 
 static bool _wu_jian_trigger_martial_arts(coord_def old_pos,
                                           coord_def new_pos,
-                                          bool check_only = false)
+                                          bool check_only = false,
+                                          bool allow_lunge = true)
 {
     if (new_pos == old_pos
         || you.duration[DUR_CONF]
@@ -2067,7 +2070,7 @@ static bool _wu_jian_trigger_martial_arts(coord_def old_pos,
 
     bool attacked = false;
 
-    if (have_passive(passive_t::wu_jian_lunge))
+    if (allow_lunge && have_passive(passive_t::wu_jian_lunge))
         attacked = _wu_jian_lunge(old_pos, new_pos, check_only);
 
     if (have_passive(passive_t::wu_jian_whirlwind))
@@ -2145,11 +2148,12 @@ void wu_jian_wall_jump_effects()
 }
 
 bool wu_jian_post_move_effects(bool did_wall_jump,
-                               const coord_def& old_pos)
+                               const coord_def& old_pos,
+                               bool allow_lunge)
 {
     bool attacked = false;
     if (!did_wall_jump)
-        attacked = _wu_jian_trigger_martial_arts(old_pos, you.pos());
+        attacked = _wu_jian_trigger_martial_arts(old_pos, you.pos(), false, allow_lunge);
 
     if (you.attribute[ATTR_SERPENTS_LASH])
         place_cloud(CLOUD_DUST, old_pos, 2 + random2(3) , &you, 1, -1);

@@ -1086,6 +1086,7 @@ void blorkula_bat_merge(monster& bat)
     blork->move_to(pos, MV_INTERNAL);
 
     _blorkula_bat_merge_message(blork, bat_count);
+    behaviour_event(blork, ME_ALERT);
 }
 
 static void _blorkula_bat_merge_message(monster* blork, int bat_count)
@@ -2808,7 +2809,7 @@ item_def* monster_die(monster& mons, killer_type killer,
     else if (mons.type == MONS_PLAYER_SHADOW)
         dithmenos_cleanup_player_shadow(&mons);
     else if (mons.type == MONS_ORB_GUARDIAN
-             && real_death
+             && (real_death || killer == KILL_BANISHED)
              && level_id::current() == level_id(BRANCH_ZOT, 5)
              && !player_on_orb_run()
              && !you.props.exists(TESSERACT_SPAWN_COUNTER_KEY))
@@ -2840,6 +2841,11 @@ item_def* monster_die(monster& mons, killer_type killer,
     }
     else if (mons.type == MONS_ERYTHROSPITE && !mons.is_abjurable())
         bleed_onto_floor(mons.pos(), MONS_ERYTHROSPITE, 100, false);
+    else if (mons.type == MONS_ROYAL_JELLY && mons.hit_points > 0
+             && real_death && !summoned)
+    {
+        schedule_trj_spawn_fineff(&you, &mons, mons.pos(), mons.hit_points);
+    }
 
     if (mons.has_ench(ENCH_MAGNETISED))
     {

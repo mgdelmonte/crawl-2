@@ -1213,13 +1213,6 @@ static int _player_bonus_regen()
     if (you.duration[DUR_ENGORGED])
         rr += get_form()->get_effect_size();
 
-    // Rampage healing grants a variable regen boost while active.
-    if (you.get_mutation_level(MUT_ROLLPAGE) > 1
-        && you.duration[DUR_RAMPAGE_HEAL])
-    {
-        rr += you.props[RAMPAGE_HEAL_KEY].get_int() * 65;
-    }
-
     if (you.duration[DUR_OOZE_REGEN])
         rr += you.hp_max * 4;
 
@@ -1290,6 +1283,14 @@ int player_regen()
     return rr;
 }
 
+int player_indomitable_regen_rate()
+{
+    if (!you.duration[DUR_INDOMITABLE])
+        return 0;
+
+    return you.hp_max / 7 + 15;
+}
+
 int player_mp_regen()
 {
     if (you.has_mutation(MUT_HP_CASTING))
@@ -1309,10 +1310,6 @@ int player_mp_regen()
         if (is_artefact(*item))
             regen_amount += 40 * artefact_property(*item, ARTP_MANA_REGENERATION);
     }
-
-    // Rampage healing grants a variable regen boost while active.
-    if (you.duration[DUR_RAMPAGE_HEAL])
-        regen_amount += you.props[RAMPAGE_HEAL_KEY].get_int() * 33;
 
     if (you.duration[DUR_OOZE_REGEN])
         regen_amount += you.max_magic_points * 4;
@@ -3404,6 +3401,9 @@ int player_stealth()
     if (player_has_orb() || you.unrand_equipped(UNRAND_CHARLATANS_ORB))
         stealth /= 3;
 
+    if (you.duration[DUR_STAMPEDE] && you.has_mutation(MUT_SOUTH_WIND))
+        stealth = stealth * 3 / 2;
+
     // Cap minimum stealth during Nightfall at 100. (0, otherwise.)
     stealth = max(you.duration[DUR_PRIMORDIAL_NIGHTFALL] ? 100 : 0, stealth);
 
@@ -5200,23 +5200,6 @@ void dec_frozen_ramparts(int delay)
     }
 }
 
-void reset_rampage_heal_duration()
-{
-    const int heal_dur = random_range(3, 6);
-    you.set_duration(DUR_RAMPAGE_HEAL, heal_dur);
-}
-
-void apply_rampage_heal(int distance_moved)
-{
-    if (!you.has_mutation(MUT_ROLLPAGE))
-        return;
-
-    reset_rampage_heal_duration();
-
-    const int heal = you.props[RAMPAGE_HEAL_KEY].get_int();
-    you.props[RAMPAGE_HEAL_KEY] = min(RAMPAGE_HEAL_MAX, heal + distance_moved);
-}
-
 bool invis_allowed(bool quiet, string *fail_reason, bool temp)
 {
     string msg;
@@ -5438,6 +5421,7 @@ player::player()
     zig_max          = 0;
 
     last_unequip = -1;
+    last_fired   = -1;
 
     symbol          = MONS_PLAYER;
     form            = transformation::none;
@@ -5625,8 +5609,10 @@ player::player()
     time_taken          = 0;
     shield_blocks       = 0;
     reprisals.clear();
+    whirlwind_targets.clear();
     triggers_done.init(0);
     attempted_attack    = false;
+    did_east_wind       = 0;
 
     abyss_speed         = 0;
     game_seed           = 0;
@@ -5641,6 +5627,11 @@ player::player()
     entering_level      = false;
 
     zot_orb_monster_known = false;
+
+    wind_category_weight.init(0);
+    wind_category_inc.init(false);
+    prevailing_wind = -1;
+    gave_wind_change_warning = false;
 
     reset_escaped_death();
     on_current_level    = true;
@@ -5789,7 +5780,7 @@ int player::rampaging() const
     int rampage = 0;
     rampage += actor::rampaging();
 
-    if (you.has_mutation(MUT_ROLLPAGE))
+    if (you.has_mutation(MUT_STAMPEDE))
         rampage++;
 
     if (you.form == transformation::spider)
@@ -7314,7 +7305,8 @@ void player::teleport(bool now, bool wizard_tele)
 
 int player::hurt(const actor *agent, int amount, beam_type flavour,
                  kill_method_type kill_type, string source, string aux,
-                 bool /*cleanup_dead*/, bool /*attacker_effects*/)
+                 bool /*cleanup_dead*/, bool /*attacker_effects*/,
+                 bool /*is_attack_damage*/)
 {
     // We ignore cleanup_dead here.
     if (!agent)
@@ -7323,13 +7315,12 @@ int player::hurt(const actor *agent, int amount, beam_type flavour,
         // to a player from a dead monster. We should probably not do that,
         // but it could be tricky to fix, so for now let's at least avoid
         // a crash even if it does mean funny death messages.
-        ouch(amount, kill_type, MID_NOBODY, aux.c_str(), false, source.c_str(),
+        ouch(amount, kill_type, MID_NOBODY, aux.c_str(), source.c_str(),
              false, flavour == BEAM_BAT_CLOUD);
     }
     else
     {
-        ouch(amount, kill_type, agent->mid, aux.c_str(),
-             agent->visible_to(this), source.c_str(), false,
+        ouch(amount, kill_type, agent->mid, aux.c_str(), source.c_str(), false,
              flavour == BEAM_BAT_CLOUD);
     }
 
@@ -8546,7 +8537,8 @@ bool need_expiration_warning(duration_type dur, dungeon_feature_type feat)
     if (dur == DUR_FLIGHT)
         return true;
     else if (dur == DUR_TRANSFORMATION
-             && (form_can_swim()) || form_can_fly())
+             && (form_can_fly() || form_can_swim())
+             && feat_dangerous_for_form(you.default_form, feat, you.active_talisman()))
     {
         return true;
     }
@@ -9269,7 +9261,7 @@ void refresh_meek_bonus()
     you.redraw_armour_class = true;
 }
 
-static bool _ench_triggers_trickster(enchant_type ench)
+bool ench_triggers_trickster(enchant_type ench)
 {
     switch (ench)
     {
@@ -9333,7 +9325,7 @@ static int _trickster_max_boost()
 // Increment AC boost when applying a negative status effect to a monster.
 void trickster_trigger(const monster& victim, enchant_type ench)
 {
-    if (!_ench_triggers_trickster(ench))
+    if (!ench_triggers_trickster(ench))
         return;
 
     if (!you.can_see(victim) || !you.see_cell_no_trans(victim.pos())

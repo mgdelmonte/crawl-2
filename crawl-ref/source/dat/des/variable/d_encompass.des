@@ -391,7 +391,7 @@ MONS:     iron dragon w:5 / iron dragon perm_ench:shapeshifter w:5 / \
           dancing weapon ; glaive ego:flaming | glaive ego:freezing | \
                            battleaxe ego:flaming | battleaxe ego:freezing
 KMONS:    5 = deep elf blademaster ; mundane crystal plate armour . \
-                                     rapier ego:flaming . rapier ego:freezing
+                                     athame ego:flaming . athame ego:freezing
 KMONS:    6 = deep elf master archer ; ice dragon scales . longbow ego:flaming / \
               deep elf master archer ; fire dragon scales . longbow ego:freezing
 KMONS:    7 = Vv w:2 / ancient lich / alderking w:6, \

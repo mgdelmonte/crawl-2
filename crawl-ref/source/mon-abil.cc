@@ -328,29 +328,6 @@ static monster* _do_split(monster* thing, const coord_def & target, bool quiet =
     return new_slime;
 }
 
-// Cause a monster to lose a turn. has_gone should be true if the
-// monster has already moved this turn.
-static void _lose_turn(monster* mons, bool has_gone)
-{
-    const monsterentry* entry = get_monster_data(mons->type);
-
-    // We want to find out if mons will move next time it has a turn
-    // (assuming for the sake of argument the next delay is 10). If it's
-    // already going to lose a turn we don't need to do anything.
-    mons->speed_increment += entry->speed;
-    if (!mons->has_action_energy())
-        return;
-    mons->speed_increment -= entry->speed;
-
-    mons->speed_increment -= entry->energy_usage.move;
-
-    // So we subtracted some energy above, but if mons hasn't moved yet
-    // /this turn, that will just cancel its turn in this round of
-    // world_reacts().
-    if (!has_gone)
-        mons->speed_increment -= entry->energy_usage.move;
-}
-
 // Actually merge two slime creatures, pooling their hp, etc.
 // initial_slime is the one that gets killed off by this process.
 static void _do_merge_slimes(monster* initial_slime, monster* merge_to)
@@ -378,13 +355,12 @@ static void _do_merge_slimes(monster* initial_slime, monster* merge_to)
         merge_to->props[OKAWARU_DUEL_CURRENT_KEY] = true;
     }
 
-    // Merging costs the combined slime some energy. The idea is that if 2
-    // slimes merge you can gain a space by moving away the turn after (maybe
-    // this is too nice but there will probably be a lot of complaints about
-    // the damage on higher level slimes). We see if mons has gone already by
-    // checking its mindex (this works because handle_monsters just iterates
-    // over env.mons in ascending order).
-    _lose_turn(merge_to, merge_to->mindex() < initial_slime->mindex());
+    // Give the player 10 aut to act without the merged slime creature acting
+    // (if the slime isn't hasted). The idea is that if 2 slimes merge you can
+    // gain a space by moving away the turn after (maybe this is too nice but
+    // there will probably be a lot of complaints about the damage on higher
+    // level slimes).
+    merge_to->speed_increment = 79 - mons_class_base_speed(merge_to->type);
 
     // Overwrite the state of the slime getting merged into, because it
     // might have been resting or something.
@@ -732,11 +708,14 @@ static void _starcursed_scream(monster* mon, actor* target)
     {
         if (you.see_cell(target->pos()))
         {
+            bool mind = mons_intel(*target->as_monster()) > I_BRAINLESS;
             mprf(target->as_monster()->friendly() ? MSGCH_FRIEND_SPELL
                                                   : MSGCH_MONSTER_SPELL,
-                 "%s writhes in pain as voices assail %s mind.",
+                 "%s writhes%s as voices assail %s %s.",
                  target->name(DESC_THE).c_str(),
-                 target->pronoun(PRONOUN_POSSESSIVE).c_str());
+                 mind ? " in pain" : "",
+                 target->pronoun(PRONOUN_POSSESSIVE).c_str(),
+                 mind ? "mind" : "being" );
         }
     }
     else

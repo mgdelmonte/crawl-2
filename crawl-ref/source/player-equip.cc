@@ -1503,7 +1503,7 @@ static void _calc_hp_artefact()
 {
     calc_hp();
     if (you.hp_max <= 0) // Borgnjor's abusers...
-        ouch(0, KILLED_BY_DRAINING);
+        player_die(KILLED_BY_DRAINING);
 }
 
 static void _flight_equip()
@@ -1660,13 +1660,23 @@ void equip_effect(int item_slot, bool unmeld, bool msg)
         ash_check_bondage();
 }
 
+static void _unequip_maybe_destroy_item(item_def& item)
+{
+    // Cursed and fragile items should always be destroyed on unequip.
+    if ((is_artefact(item) && artefact_property(item, ARTP_FRAGILE))
+        || item.cursed())
+    {
+        dec_inv_item_quantity(item.link, 1);
+    }
+}
+
 void unequip_effect(int item_slot, bool meld, bool msg)
 {
     item_def& item = you.inv[item_slot];
 
     const interrupt_block block_meld_interrupts(meld);
 
-   if (is_artefact(item))
+    if (is_artefact(item))
         unequip_artefact_effect(item, &msg, meld);
 
     if (is_weapon(item))
@@ -1676,9 +1686,8 @@ void unequip_effect(int item_slot, bool meld, bool msg)
     else if (item.base_type == OBJ_JEWELLERY)
         _unequip_jewellery_effect(item, meld);
 
-    // Cursed items should always be destroyed on unequip.
-    if (item.cursed() && !meld)
-        destroy_item(item);
+    if (!meld)
+        _unequip_maybe_destroy_item(item);
 }
 
 ///////////////////////////////////////////////////////////
@@ -1735,7 +1744,7 @@ void equip_artefact_effect(item_def &item, bool *show_msgs, bool unmeld)
     }
 
     if (proprt[ARTP_RAMPAGING] && msg && !unmeld
-        && !you.has_mutation(MUT_ROLLPAGE))
+        && !you.has_mutation(MUT_STAMPEDE))
     {
         mpr("You feel ready to rampage towards enemies.");
     }
@@ -1822,7 +1831,6 @@ void unequip_artefact_effect(item_def &item,  bool *show_msgs, bool meld)
     if (artefact_property(item, ARTP_FRAGILE) && !meld)
     {
         mprf("%s crumbles to dust!", item.name(DESC_THE).c_str());
-        dec_inv_item_quantity(item.link, 1);
 
         // Hide unwield messages for weapons that have already been destroyed.
         if (item.base_type == OBJ_WEAPONS)
@@ -2023,6 +2031,23 @@ static void _equip_weapon_effect(item_def& item, bool showMsgs, bool unmeld)
 
         default:
             break;
+        }
+    }
+
+    if (item.sub_type == WPN_ATHAME)
+    {
+        if (you.hp <= 2)
+        {
+            mprf("Your athame gleams mockingly in your nearly-%s state.",
+                 (you.is_nonliving() || you.is_lifeless_undead()) ? "destroyed" :
+                                                                    "dead");
+        }
+        else
+        {
+            mprf("Your athame demands its blood price!%s",
+                 you.has_blood() ? "" : " (Figuratively speaking.)");
+            ouch(max(you.hp / 10, 1), KILLED_BY_SELF_AIMED, MID_PLAYER,
+                 nullptr, nullptr, true);
         }
     }
 
@@ -2305,7 +2330,7 @@ static void _equip_armour_effect(item_def& arm, bool unmeld)
             break;
 
         case SPARM_RAMPAGING:
-            if (!you.has_mutation(MUT_ROLLPAGE))
+            if (!you.has_mutation(MUT_STAMPEDE))
                 mpr("You feel ready to rampage towards enemies.");
             break;
 

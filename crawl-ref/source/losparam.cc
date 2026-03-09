@@ -21,6 +21,7 @@ const opacity_immob opc_immob = opacity_immob();
 const opacity_solid opc_solid = opacity_solid();
 const opacity_solid_see opc_solid_see = opacity_solid_see();
 const opacity_no_actor opc_no_actor = opacity_no_actor();
+const opacity_unblocked_shot opc_unblocked_shot = opacity_unblocked_shot();
 const opacity_excl opc_excl = opacity_excl();
 
 opacity_type opacity_default::operator()(const coord_def& p) const
@@ -117,6 +118,23 @@ opacity_type opacity_no_actor::operator()(const coord_def& p) const
         return OPC_OPAQUE;
     else
         return OPC_CLEAR;
+}
+
+opacity_type opacity_unblocked_shot::operator()(const coord_def& p) const
+{
+    if (feat_is_solid(env.grid(p)))
+        return OPC_OPAQUE;
+
+    if (actor* act = actor_at(p))
+    {
+        if (you.can_see(*act) && !shoot_through_actor(&you, act)
+            && act->type != MONS_BUSH)
+        {
+            return OPC_OPAQUE;
+        }
+    }
+
+    return OPC_CLEAR;
 }
 
 opacity_type opacity_excl::operator()(const coord_def& p) const
