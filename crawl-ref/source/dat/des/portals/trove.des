@@ -332,7 +332,7 @@ function trove_standard_magic(e, school, use_staff)
       secondary = sc
     end
   end
-  if crawl.game_started() and you.base_skill(schname) < 27 then
+  if crawl.game_started() and schname ~= "" and you.base_skill(schname) < 27 then
     output = manual
   elseif you.mutation("innate caster") == 1 and you.mutation("missing a hand") then
     output = "gold good_item"

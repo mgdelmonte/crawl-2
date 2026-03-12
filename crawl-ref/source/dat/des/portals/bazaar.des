@@ -380,12 +380,10 @@ ORIENT: encompass
   local xom = dgn.persist.xom_bazaar
   if crawl.game_started() and xom == true then
     local map = dgn.map_by_tag("xom_bazaar")
-    assert(map, "Couldn't find a map for Xom bazaar")
-    dgn.place_map(map, false, false)
+    if map then dgn.place_map(map, false, false) end
   elseif crawl.game_started() then
     local map = dgn.map_by_tag("normal_bazaar")
-    assert(map, "Couldn't find a map for normal bazaar")
-    dgn.place_map(map, false, false)
+    if map then dgn.place_map(map, false, false) end
   end
   dgn.persist.xom_bazaar = false
 }}

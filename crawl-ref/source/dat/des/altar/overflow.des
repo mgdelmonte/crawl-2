@@ -1903,7 +1903,7 @@ ENDMAP
 NAME:   nicolae_hepliaklqana_this_could_be_you
 TAGS:   transparent decor buniq_s_overflow_glass
 : local mons = you.monster()
-: if (not crawl.game_started()) then
+: if (not crawl.game_started()) or mons == "program bug" then
 :    mons = "human"
 : end
 : kmons("1 = " .. mons)

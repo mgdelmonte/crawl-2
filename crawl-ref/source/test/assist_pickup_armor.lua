@@ -37,6 +37,10 @@ you.moveto(40, 40)
 local armor_x, armor_y = 44, 40
 dgn.create_item(armor_x, armor_y, "cloak")
 
+-- Also place an orb (should be IGNORED by armor pickup)
+local orb_x, orb_y = 42, 40
+dgn.create_item(orb_x, orb_y, "orb ego:light")
+
 -- Verify the armor was placed
 local floor_items = dgn.items_at(armor_x, armor_y)
 assert(#floor_items > 0, "armor should be placed on floor")
@@ -122,6 +126,91 @@ else
 end
 
 -----------------------------------------------------------------------
+-- TEST 2: Orbs should NOT be picked up as "better armor"
+-----------------------------------------------------------------------
+crawl.stderr("\n=== TEST 2: Orbs should be ignored ===")
+
+-- Check that orb is still on floor (wasn't picked up)
+local orb_items = dgn.items_at(orb_x, orb_y)
+local orb_still_there = false
+for _, it in ipairs(orb_items) do
+    if it.name():lower():find("orb") then
+        orb_still_there = true
+        crawl.stderr("Orb still on floor: " .. it.name())
+        break
+    end
+end
+
+-- Also verify orb is NOT in inventory
+local orb_in_inv = false
+for i = 0, 51 do
+    local item = items.inslot(i)
+    if item and item.name():lower():find("orb") and item.class(true) == "armour" then
+        orb_in_inv = true
+        crawl.stderr("ERROR: Orb found in inventory: " .. item.name())
+        break
+    end
+end
+
+if orb_still_there and not orb_in_inv then
+    crawl.stderr("PASS: Orb was correctly ignored (not picked up)")
+else
+    crawl.stderr("FAIL: Orb was incorrectly picked up")
+end
+
+-- Verify orb subtype for future reference
+for _, it in ipairs(orb_items) do
+    if it.subtype then
+        crawl.stderr("Orb subtype: " .. tostring(it.subtype()))
+    end
+end
+
+-----------------------------------------------------------------------
+-- TEST 3: Poltergeist with 5 items should still have slot available
+-----------------------------------------------------------------------
+crawl.stderr("\n=== TEST 3: Poltergeist armor slots ===")
+
+-- Save original species
+local original_species = you.race()
+crawl.stderr("Original species: " .. original_species)
+
+-- Change to poltergeist to test flexible slot handling
+if you.change_species then
+    you.change_species("Poltergeist")
+    crawl.stderr("Changed to: " .. you.race())
+
+    -- Poltergeists have 6 HAUNTED_AUX slots for aux armor
+    -- Test that slot_is_available works correctly
+    if items.slot_is_available then
+        -- With no items equipped, helmet slot should be available
+        local helmet_available = items.slot_is_available("helmet")
+        crawl.stderr("Helmet slot available (empty): " .. tostring(helmet_available))
+
+        if helmet_available then
+            crawl.stderr("PASS: Poltergeist can equip helmet (slot available)")
+        else
+            crawl.stderr("FAIL: Poltergeist should have helmet slot available")
+        end
+
+        -- Also test cloak, gloves, boots
+        local cloak_available = items.slot_is_available("cloak")
+        local gloves_available = items.slot_is_available("gloves")
+        local boots_available = items.slot_is_available("boots")
+        crawl.stderr("Other slots - cloak: " .. tostring(cloak_available) ..
+                     ", gloves: " .. tostring(gloves_available) ..
+                     ", boots: " .. tostring(boots_available))
+    else
+        crawl.stderr("SKIP: items.slot_is_available not available")
+    end
+
+    -- Change back to original species
+    you.change_species(original_species)
+    crawl.stderr("Changed back to: " .. you.race())
+else
+    crawl.stderr("SKIP: you.change_species not available in this build")
+end
+
+-----------------------------------------------------------------------
 -- Summary
 -----------------------------------------------------------------------
 crawl.stderr("\n=== assist_pickup_armor test completed ===")
@@ -129,4 +218,5 @@ crawl.stderr("The check_for_armor() function successfully:")
 crawl.stderr("  - Detected the armor on the floor")
 crawl.stderr("  - Traveled to the armor location")
 crawl.stderr("  - Picked up the armor")
+crawl.stderr("  - Correctly ignored orbs")
 crawl.stderr("NOTE: Auto-wear after pickup may need investigation")

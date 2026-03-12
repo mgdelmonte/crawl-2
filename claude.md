@@ -71,6 +71,41 @@ if (in_headless_mode())
     return;  // skip console operations
 ```
 
+## assist.rc Maintenance
+
+The `C:/dev/simple/assist.rc` file displays a startup message with the last-modified timestamp. When modifying assist.rc, update the timestamp in the `init()` function using the **user's actual local time** (do not make up times):
+
+```lua
+crawl.mpr("starting assist (updated YYYY-MM-DD HH:MM)")  -- use actual local time, don't guess
+```
+
+### RC File Lua Block Syntax
+
+RC files enclose Lua code in `{` and `}` braces. The parser looks for `}` at the **start of a line** to end the Lua block. This means:
+
+- **NEVER** have a closing brace `}` at the start of a line (column 1) except for the final `}` that ends the Lua block
+- Put closing braces on the same line as the last element
+
+```lua
+-- WRONG - parser sees } as end of Lua block
+my_table = {
+    ["key"] = true,
+}
+
+-- CORRECT - closing brace on same line as last element
+my_table = {
+    ["key"] = true }
+```
+
+## Lua Persist Tables
+
+There are two persist tables with different availability:
+
+- **`c_persist`** - Works everywhere (online, offline, but NOT in test mode). Use this for RC files.
+- **`persist`** - Only works in offline play. NOT available online or in test mode.
+
+For RC features that need to save state (e.g., tracking explored levels), use `c_persist`.
+
 ## Reference
 
 - Full test docs: `crawl-ref/docs/develop/testing.md`
